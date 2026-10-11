@@ -76,7 +76,7 @@ _DEFER_QNORM = True  # smk: the cross-attention's q norm inside the query quanti
 _DEFER_QROPE = True  # smk: the self-attention's q norm + RoPE inside the query quantiser (module constant)
 _TRITON_PARTS = ("mod", "modq", "gelu", "rms", "ln", "tay", "smk")
 # activation streaming (rows): SageAttention's key / value preparation once per block, not per row chunk
-# (rows_attention; WEIGHTFERRY_ACT_KV_ONCE, off by default; module constant for benchmarks)
+# (rows_attention; WEIGHTFERRY_ACT_KV_ONCE, on by default since 2026-10-12, 0 turns it off; module constant)
 _ROWS_KV = _env.get("WEIGHTFERRY_ACT_KV_ONCE") == "1"
 
 

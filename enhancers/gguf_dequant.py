@@ -22,9 +22,10 @@ reads the blocks once and writes the weight once, with the same arithmetic as Co
   then + m likewise (Q4_1 / Q5_1), then the cast to the layer's dtype -- each rounding to nearest even, done with
   explicit conversions so the compiler cannot drop one.
 
-The five legacy formats; the K-quants Q2_K / Q3_K / Q4_K / Q5_K / Q6_K too with WEIGHTFERRY_GGUF_KQUANTS=1 (off by
-default; 2026-10-12: the same bits on synthetic blocks of each in every dtype and on every tensor of Wan 2.1 14B
-Q4_K_M, dequantisation x8, streamed at 4 GB x1.40). Anything else keeps ComfyUI-GGUF's code, as do CPU tensors.
+The five legacy formats; the K-quants Q2_K / Q3_K / Q4_K / Q5_K / Q6_K too with WEIGHTFERRY_GGUF_KQUANTS (on by
+default since 2026-10-12, 0 turns it off; the same bits on synthetic blocks of each in every dtype and on every
+tensor of Wan 2.1 14B Q4_K_M, dequantisation x8, streamed at 4 GB x1.47). Anything else keeps ComfyUI-GGUF's code, as
+do CPU tensors.
 
 LoRA (2026-10-12): ComfyUI-GGUF's GGMLLayer.get_weight dequantises, then applies the patches with
 comfy.lora.calculate_weight on every use. For plain LoRA patches (no DoRA / mid weight / reshape / offset /
@@ -51,7 +52,7 @@ except Exception:  # noqa: BLE001
 _FORMATS = {2: ("Q4_0", 18, False, -1, 2, 8, False), 3: ("Q4_1", 20, True, -1, 4, 0, False),
             6: ("Q5_0", 22, False, 2, 6, 16, False), 7: ("Q5_1", 24, True, 4, 8, 0, False),
             8: ("Q8_0", 34, False, -1, 2, 0, True)}
-# K-quants (2026-10-12, WEIGHTFERRY_GGUF_KQUANTS, off): GGML type id -> name, bytes per block of 256 values
+# K-quants (2026-10-12, WEIGHTFERRY_GGUF_KQUANTS, on by default): GGML type id -> name, bytes per block of 256 values
 _KFORMATS = {10: ("Q2_K", 84), 11: ("Q3_K", 110), 12: ("Q4_K", 144), 13: ("Q5_K", 176), 14: ("Q6_K", 210)}
 _KQUANTS = None  # None = WEIGHTFERRY_GGUF_KQUANTS (module constant for benchmarks)
 _DT = {torch.float16: 0, torch.bfloat16: 1, torch.float32: 2}
@@ -410,7 +411,7 @@ def _factor_mode():
     if _FACTORS is not None:
         return _FACTORS
     from ..core import env as _env
-    mode = (_env.get("WEIGHTFERRY_GGUF_LORA_FACTORS") or "0").strip().lower()
+    mode = (_env.get("WEIGHTFERRY_GGUF_LORA_FACTORS") or "pin").strip().lower()
     return mode if mode == "pin" else "0"
 
 
