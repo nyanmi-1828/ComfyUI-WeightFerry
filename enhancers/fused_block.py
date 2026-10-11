@@ -263,7 +263,7 @@ def _selfattn_qkv_rope(self, x, rope_emb, projs):
     q_scale, _, q_os = comfy.ops.cast_bias_weight(self.q_norm, q, offloadable=True)
     k_scale, _, k_os = comfy.ops.cast_bias_weight(self.k_norm, k, offloadable=True)
     try:
-        if sage_fused.rope_ok(q, k, rope_emb, q_scale, k_scale):
+        if sage_fused.rope_ok(q, k, rope_emb, q_scale, k_scale, self.q_norm.eps):
             k_out = sage_fused.rms_rope(k, rope_emb, k_scale, self.q_norm.eps)
             _tls.qnorm = {"kind": "rope", "key": (q.data_ptr(), tuple(q.shape), tuple(q.stride())), "f": rope_emb,
                           "w": q_scale.clone(), "eps": float(self.q_norm.eps)}

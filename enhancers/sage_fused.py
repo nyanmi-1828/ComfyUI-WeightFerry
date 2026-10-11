@@ -290,17 +290,29 @@ def available(q):
     return "fp32+fp32" if core.get_cuda_version() < (12, 8) else "fp32+fp16"
 
 
-def rope_ok(q, k, f, q_scale, k_scale):
+def rope_ok(q, k, f, q_scale, k_scale, eps=1e-6):
     """The case the Triton reproduction of comfy_kitchen's rms_rope_split_half covers: contiguous bf16
-    (batch, tokens, heads, 128) q and k of the same shape, float32 rotations (1, tokens, 1, 64, 2, 2), scales of 128."""
+    (batch, tokens, heads, 128) q and k of the same shape, float32 rotations (1, tokens, 1, 64, 2, 2), scales of 128
+    of one dtype -- and kitchen itself would take its CUDA kernel for this call (the kernel reproduced; kitchen's CUDA
+    backend is disabled e.g. by ComfyUI with a CUDA 12 torch, or a backend override; then ComfyUI's call)."""
     if triton is None or f is None:
         return False
     b, L, h, d = q.shape if q.dim() == 4 else (0, 0, 0, 0)
-    return (d == 128 and q.dtype == torch.bfloat16 and k.dtype == torch.bfloat16 and k.shape == q.shape
+    if not (d == 128 and q.dtype == torch.bfloat16 and k.dtype == torch.bfloat16 and k.shape == q.shape
             and q.is_contiguous() and k.is_contiguous() and q.is_cuda and f.dtype == torch.float32 and f.dim() == 6
             and tuple(f.shape) == (1, L, 1, 64, 2, 2) and f.device == q.device
             and all(s is not None and s.dim() == 1 and s.shape[0] == 128 and s.is_contiguous() and s.device == q.device
-                    and s.dtype in (torch.bfloat16, torch.float16, torch.float32) for s in (q_scale, k_scale)))
+                    and s.dtype in (torch.bfloat16, torch.float16, torch.float32) for s in (q_scale, k_scale))
+            and q_scale.dtype == k_scale.dtype):
+        return False
+    try:
+        import comfy.quant_ops
+        backend = comfy.quant_ops.ck.registry.get_capable_backend(
+            "rms_rope_split_half", dict(q=q, k=k, freqs_cis=f, q_scale=q_scale, k_scale=k_scale, epsilon=eps,
+                                        rot_dim=0))
+    except Exception:  # noqa: BLE001
+        return False
+    return backend == "cuda"
 
 
 def rms_rope(x, f, w, eps):
