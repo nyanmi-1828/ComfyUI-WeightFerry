@@ -9,8 +9,15 @@ import atexit
 
 import torch
 
-from .fused_kernels import PRE_GELU, PRE_LNMOD, PRE_MOD, _get_kernels
-from .fused_state import _count, _tls
+from . import fused_kernels
+from .fused_kernels import PRE_GELU, PRE_LNMOD, PRE_MOD, PRE_NONE, _get_kernels
+from .fused_state import _count, _state, _tls
+
+# the Triton quantiser's launch (2026-10-11): warps per row, and whether plain inputs (no pending operation) go through
+# it instead of kitchen's quantiser. The same bits either way; module constants so that a benchmark can compare
+# (scratch/verify/ab_resident.py: 8 / False is the 1.0.0 behaviour)
+_QUANT_WARPS = 2
+_PLAIN_QUANT = True
 
 
 # ------------------------------------------------------------------------------------------------------ pending inputs
@@ -54,17 +61,18 @@ def _quantise_pre(pre, x_2d, x_q, x_s):
     """Fill x_q / x_s with kitchen's quantisation of the pending input's real value (the Triton reproduction)."""
     m, k = x_2d.shape
     quant_row = _get_kernels()["quant_row"]
-    # 2 warps per row: the same bits as 8 (the amax and the rotation do not depend on the thread layout, _ln_stats
-    # models its 128 threads in the tensor shapes), 1.5 - 2.2x faster on the RTX 4060 at Anima's widths 2048 / 8192
-    # (2026-10-11, scratch/verify/quant_row_bench.py)
+    # _QUANT_WARPS (2) per row: the same bits as 8 (the amax and the rotation do not depend on the thread layout,
+    # _ln_stats models its 128 threads in the tensor shapes), 1.5 - 2.2x faster on the RTX 4060 at Anima's widths
+    # 2048 / 8192 (2026-10-11, scratch/verify/quant_row_bench.py)
+    nw = _QUANT_WARPS
     if pre["kind"] == "gelu":
-        quant_row[(m,)](x_2d, _gelu_table(x_2d.device), x_2d, x_q, x_s, 1, 0.0, K=k, PRE=PRE_GELU, num_warps=2)
+        quant_row[(m,)](x_2d, _gelu_table(x_2d.device), x_2d, x_q, x_s, 1, 0.0, K=k, PRE=PRE_GELU, num_warps=nw)
     elif pre["kind"] == "lnmod":
         quant_row[(m,)](x_2d, pre["s1"], pre["shift"], x_q, x_s, pre["rows_per_group"], float(pre["norm"].eps), K=k,
-                        PRE=PRE_LNMOD, num_warps=2)
+                        PRE=PRE_LNMOD, num_warps=nw)
     else:
         quant_row[(m,)](x_2d, pre["s1"], pre["shift"], x_q, x_s, pre["rows_per_group"], 0.0, K=k, PRE=PRE_MOD,
-                        num_warps=2)
+                        num_warps=nw)
 
 
 _gelu_tables = {}
@@ -161,6 +169,11 @@ def _int8_quantised(x, weight, bias):
         if is_pre:  # the pending operation inside the quantiser: the same bits as kitchen's on the real input
             _quantise_pre(pre, x_2d, x_q, x_s)
             _count({"gelu": "gelu", "lnmod": "ln"}.get(pre["kind"], "modq"), True)
+        elif _PLAIN_QUANT and fused_kernels.triton is not None and "modq" in _state["parts"] and not k & (k - 1):
+            # a plain input (the attention outputs before the output projections): the same reproduction without an
+            # operation, 2 warps per row -- the bits of kitchen's quantiser, faster at Anima's width (2026-10-11)
+            _get_kernels()["quant_row"][(m,)](x_2d, x_2d, x_2d, x_q, x_s, 1, 0.0, K=k, PRE=PRE_NONE,
+                                              num_warps=_QUANT_WARPS)
         else:
             kc._C.quantize_int8_rowwise_convrot64(
                 kc._wrap_for_dlpack(x_2d), kc._wrap_for_dlpack(x_q), kc._wrap_for_dlpack(x_s), gs, False,

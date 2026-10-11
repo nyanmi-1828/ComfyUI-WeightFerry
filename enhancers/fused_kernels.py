@@ -12,6 +12,7 @@ except Exception:  # noqa: BLE001 -- no Triton: the parts that need it stay off
     triton = tl = None
 
 # the operation _quant_row applies before the rotation (its PRE constexpr; the kernel compares these literal values)
+PRE_NONE = 0   # none: kitchen's quantiser on the input as it is
 PRE_GELU = 1   # PyTorch's GELU of the bf16 input, looked up in a 65536-entry table
 PRE_MOD = 2    # the scale-and-shift bf16(bf16(x * (1 + scale)) + shift)
 PRE_LNMOD = 3  # LayerNorm (no affine), then the scale-and-shift
