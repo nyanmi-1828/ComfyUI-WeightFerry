@@ -1,0 +1,6 @@
+# ComfyUI-WeightFerry needs nothing beyond ComfyUI itself (PyTorch with CUDA, safetensors, einops).
+# Optional, install yourself if you want them:
+#   sageattention    -- the streaming node can switch ComfyUI's attention to SageAttention
+#   triton-windows   -- (Windows; Linux PyTorch ships Triton) Triton for the fused Cosmos / Anima block kernels;
+#                       without it those kernels stay off and ComfyUI's own code runs
+#   gguf             -- only for tools/convert_to_gguf.py

@@ -1,0 +1,2750 @@
+{
+  "revision": 0,
+  "last_node_id": 181,
+  "last_link_id": 473,
+  "nodes": [
+    {
+      "id": 31,
+      "type": "UpscaleModelLoader",
+      "pos": [
+        498,
+        1062
+      ],
+      "size": [
+        300,
+        60
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "model_name"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "UPSCALE_MODEL",
+          "type": "UPSCALE_MODEL",
+          "links": [
+            382
+          ]
+        }
+      ],
+      "title": "Upscale model (4x-UltraSharp)",
+      "properties": {
+        "Node name for S&R": "UpscaleModelLoader"
+      },
+      "widgets_values": [
+        "4x-UltraSharp.pth"
+      ]
+    },
+    {
+      "id": 78,
+      "type": "CLIPLoader",
+      "pos": [
+        498,
+        772
+      ],
+      "size": [
+        300,
+        110
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "clip_name"
+          },
+          "link": null
+        },
+        {
+          "name": "type",
+          "type": "COMBO",
+          "widget": {
+            "name": "type"
+          },
+          "link": null
+        },
+        {
+          "name": "device",
+          "shape": 7,
+          "type": "COMBO",
+          "widget": {
+            "name": "device"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            258,
+            432
+          ]
+        }
+      ],
+      "title": "Text encoder",
+      "properties": {
+        "Node name for S&R": "CLIPLoader"
+      },
+      "widgets_values": [
+        "qwen_3_06b_base.safetensors",
+        "qwen_image",
+        "default"
+      ]
+    },
+    {
+      "id": 77,
+      "type": "VAELoader",
+      "pos": [
+        498,
+        942
+      ],
+      "size": [
+        300,
+        60
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "vae_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "vae_name"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            254,
+            291
+          ]
+        }
+      ],
+      "title": "VAE",
+      "properties": {
+        "Node name for S&R": "VAELoader"
+      },
+      "widgets_values": [
+        "qwen_image_vae.safetensors"
+      ]
+    },
+    {
+      "id": 5,
+      "type": "EmptyLatentImage",
+      "pos": [
+        20,
+        1342
+      ],
+      "size": [
+        260,
+        110
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "width",
+          "type": "INT",
+          "widget": {
+            "name": "width"
+          },
+          "link": 455
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "widget": {
+            "name": "height"
+          },
+          "link": 457
+        },
+        {
+          "name": "batch_size",
+          "type": "INT",
+          "widget": {
+            "name": "batch_size"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "slot_index": 0,
+          "links": [
+            193
+          ]
+        }
+      ],
+      "title": "Empty latent (width / height)",
+      "properties": {
+        "Node name for S&R": "EmptyLatentImage",
+        "cnr_id": "comfy-core",
+        "ver": "0.3.65"
+      },
+      "widgets_values": [
+        896,
+        1472,
+        1
+      ]
+    },
+    {
+      "id": 30,
+      "type": "SaveImage",
+      "pos": [
+        670,
+        1452
+      ],
+      "size": [
+        330,
+        400
+      ],
+      "flags": {},
+      "order": 29,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 245
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": []
+        }
+      ],
+      "title": "Save: base (anima_draft_base)",
+      "properties": {
+        "Node name for S&R": "SaveImage"
+      },
+      "widgets_values": [
+        "anima_draft_base"
+      ]
+    },
+    {
+      "id": 128,
+      "type": "SeedNode",
+      "pos": [
+        1461,
+        684
+      ],
+      "size": [
+        320,
+        82
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "seed",
+          "type": "INT",
+          "widget": {
+            "name": "seed"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "seed",
+          "type": "INT",
+          "slot_index": 0,
+          "links": [
+            339,
+            340
+          ]
+        }
+      ],
+      "title": "Seed (shared)",
+      "properties": {
+        "Node name for S&R": "SeedNode"
+      },
+      "widgets_values": [
+        34618426646854,
+        "randomize"
+      ]
+    },
+    {
+      "id": 73,
+      "type": "VAEDecode",
+      "pos": [
+        670,
+        1342
+      ],
+      "size": [
+        300,
+        50
+      ],
+      "flags": {},
+      "order": 28,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "samples",
+          "type": "LATENT",
+          "link": 242
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 254
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "slot_index": 0,
+          "links": [
+            245,
+            438,
+            439,
+            440
+          ]
+        }
+      ],
+      "title": "VAE Decode (base)",
+      "properties": {
+        "Node name for S&R": "VAEDecode"
+      }
+    },
+    {
+      "id": 9,
+      "type": "SaveImage",
+      "pos": [
+        2300,
+        1342
+      ],
+      "size": [
+        390,
+        600
+      ],
+      "flags": {},
+      "order": 34,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 346
+        },
+        {
+          "name": "filename_prefix",
+          "type": "STRING",
+          "widget": {
+            "name": "filename_prefix"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": []
+        }
+      ],
+      "title": "Save: final (anima_draft)",
+      "properties": {
+        "Node name for S&R": "SaveImage",
+        "cnr_id": "comfy-core",
+        "ver": "0.3.65"
+      },
+      "widgets_values": [
+        "anima_draft"
+      ]
+    },
+    {
+      "id": 7,
+      "type": "WeightFerryCLIPTextEncode",
+      "pos": [
+        1031,
+        400
+      ],
+      "size": [
+        400,
+        170
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 258
+        },
+        {
+          "name": "text",
+          "type": "STRING",
+          "widget": {
+            "name": "text"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            22,
+            290
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "Negative",
+      "properties": {
+        "Node name for S&R": "WeightFerryCLIPTextEncode"
+      },
+      "widgets_values": [
+        "worst quality, low quality, lowres, blurry, bad anatomy, bad hands, extra fingers, watermark, text, signature, nsfw, nude"
+      ],
+      "color": "#223",
+      "bgcolor": "#335"
+    },
+    {
+      "id": 76,
+      "type": "UNETLoader",
+      "pos": [
+        20,
+        80
+      ],
+      "size": [
+        448,
+        90
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "unet_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "unet_name"
+          },
+          "link": null
+        },
+        {
+          "name": "weight_dtype",
+          "type": "COMBO",
+          "widget": {
+            "name": "weight_dtype"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            441
+          ]
+        }
+      ],
+      "title": "UNET fp8 (optional: make it with tools/, then Ctrl+B to enable)",
+      "properties": {
+        "Node name for S&R": "UNETLoader"
+      },
+      "widgets_values": [
+        "anima-base-v1.0_fp8_scaled.safetensors",
+        "default"
+      ]
+    },
+    {
+      "id": 142,
+      "type": "WeightFerryUSDUTileCalculator",
+      "pos": [
+        1120,
+        1342
+      ],
+      "size": [
+        320,
+        278
+      ],
+      "flags": {},
+      "order": 39,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 439
+        },
+        {
+          "name": "tile_factor",
+          "type": "INT",
+          "widget": {
+            "name": "tile_factor"
+          },
+          "link": null
+        },
+        {
+          "name": "upscale_by",
+          "type": "FLOAT",
+          "widget": {
+            "name": "upscale_by"
+          },
+          "link": 454
+        },
+        {
+          "name": "width",
+          "shape": 7,
+          "type": "INT",
+          "widget": {
+            "name": "width"
+          },
+          "link": 456
+        },
+        {
+          "name": "height",
+          "shape": 7,
+          "type": "INT",
+          "widget": {
+            "name": "height"
+          },
+          "link": 458
+        },
+        {
+          "name": "tile_skip_threshold",
+          "shape": 7,
+          "type": "FLOAT",
+          "widget": {
+            "name": "tile_skip_threshold"
+          },
+          "link": null
+        },
+        {
+          "name": "highpass_noise_strength",
+          "shape": 7,
+          "type": "FLOAT",
+          "widget": {
+            "name": "highpass_noise_strength"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "tile_width",
+          "type": "INT",
+          "slot_index": 0,
+          "links": [
+            367
+          ]
+        },
+        {
+          "name": "tile_height",
+          "type": "INT",
+          "slot_index": 1,
+          "links": [
+            368
+          ]
+        },
+        {
+          "name": "tile_padding",
+          "type": "INT",
+          "slot_index": 2,
+          "links": [
+            369
+          ]
+        },
+        {
+          "name": "mask_blur",
+          "type": "INT",
+          "slot_index": 3,
+          "links": [
+            370
+          ]
+        },
+        {
+          "name": "tile_skip_threshold",
+          "type": "FLOAT",
+          "slot_index": 4,
+          "links": [
+            377
+          ]
+        },
+        {
+          "name": "highpass_noise_strength",
+          "type": "FLOAT",
+          "slot_index": 5,
+          "links": [
+            379
+          ]
+        }
+      ],
+      "title": "USDU tile calculator",
+      "properties": {
+        "Node name for S&R": "WeightFerryUSDUTileCalculator"
+      },
+      "widgets_values": [
+        4,
+        2,
+        896,
+        1472,
+        1,
+        0.6
+      ]
+    },
+    {
+      "id": 143,
+      "type": "easy imageColorMatch",
+      "pos": [
+        1950,
+        1342
+      ],
+      "size": [
+        320,
+        160
+      ],
+      "flags": {},
+      "order": 40,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image_ref",
+          "type": "IMAGE",
+          "link": 440
+        },
+        {
+          "name": "image_target",
+          "type": "IMAGE",
+          "link": 376
+        },
+        {
+          "name": "method",
+          "type": "COMBO",
+          "widget": {
+            "name": "method"
+          },
+          "link": null
+        },
+        {
+          "name": "image_output",
+          "type": "COMBO",
+          "widget": {
+            "name": "image_output"
+          },
+          "link": null
+        },
+        {
+          "name": "save_prefix",
+          "type": "STRING",
+          "widget": {
+            "name": "save_prefix"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "slot_index": 0,
+          "links": [
+            346
+          ]
+        }
+      ],
+      "title": "Colour match (wavelet, after the upscale)",
+      "properties": {
+        "Node name for S&R": "easy imageColorMatch"
+      },
+      "widgets_values": [
+        "wavelet",
+        "Hide",
+        "ComfyUI"
+      ]
+    },
+    {
+      "id": 3,
+      "type": "KSampler",
+      "pos": [
+        310,
+        1342
+      ],
+      "size": [
+        330,
+        480
+      ],
+      "flags": {},
+      "order": 27,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 353
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 434
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 22
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 193
+        },
+        {
+          "name": "seed",
+          "type": "INT",
+          "widget": {
+            "name": "seed"
+          },
+          "link": 339
+        },
+        {
+          "name": "steps",
+          "type": "INT",
+          "widget": {
+            "name": "steps"
+          },
+          "link": 465
+        },
+        {
+          "name": "cfg",
+          "type": "FLOAT",
+          "widget": {
+            "name": "cfg"
+          },
+          "link": 468
+        },
+        {
+          "name": "sampler_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "sampler_name"
+          },
+          "link": 444
+        },
+        {
+          "name": "scheduler",
+          "type": "COMBO",
+          "widget": {
+            "name": "scheduler"
+          },
+          "link": 445
+        },
+        {
+          "name": "denoise",
+          "type": "FLOAT",
+          "widget": {
+            "name": "denoise"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "slot_index": 0,
+          "links": [
+            242
+          ]
+        }
+      ],
+      "title": "Base generation (16 / Turbo 6 steps)",
+      "properties": {
+        "Node name for S&R": "KSampler",
+        "cnr_id": "comfy-core",
+        "ver": "0.3.65"
+      },
+      "widgets_values": [
+        925941507370599,
+        "randomize",
+        16,
+        5,
+        "bleh_preset_0",
+        "tors",
+        1
+      ]
+    },
+    {
+      "id": 100,
+      "type": "WeightFerryUltimateSDUpscalePlus",
+      "pos": [
+        1470,
+        1342
+      ],
+      "size": [
+        360,
+        850
+      ],
+      "flags": {},
+      "order": 35,
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 438
+        },
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 418
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 289
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 290
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 291
+        },
+        {
+          "name": "upscale_model",
+          "shape": 7,
+          "type": "UPSCALE_MODEL",
+          "link": 382
+        },
+        {
+          "name": "upscale_by",
+          "type": "FLOAT",
+          "widget": {
+            "name": "upscale_by"
+          },
+          "link": 453
+        },
+        {
+          "name": "seed",
+          "type": "INT",
+          "widget": {
+            "name": "seed"
+          },
+          "link": 340
+        },
+        {
+          "name": "steps",
+          "type": "INT",
+          "widget": {
+            "name": "steps"
+          },
+          "link": null
+        },
+        {
+          "name": "cfg",
+          "type": "FLOAT",
+          "widget": {
+            "name": "cfg"
+          },
+          "link": 452
+        },
+        {
+          "name": "sampler_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "sampler_name"
+          },
+          "link": 450
+        },
+        {
+          "name": "scheduler",
+          "type": "COMBO",
+          "widget": {
+            "name": "scheduler"
+          },
+          "link": 451
+        },
+        {
+          "name": "denoise",
+          "type": "FLOAT",
+          "widget": {
+            "name": "denoise"
+          },
+          "link": null
+        },
+        {
+          "name": "mode_type",
+          "type": "COMBO",
+          "widget": {
+            "name": "mode_type"
+          },
+          "link": null
+        },
+        {
+          "name": "tile_width",
+          "type": "INT",
+          "widget": {
+            "name": "tile_width"
+          },
+          "link": 367
+        },
+        {
+          "name": "tile_height",
+          "type": "INT",
+          "widget": {
+            "name": "tile_height"
+          },
+          "link": 368
+        },
+        {
+          "name": "mask_blur",
+          "type": "INT",
+          "widget": {
+            "name": "mask_blur"
+          },
+          "link": 370
+        },
+        {
+          "name": "tile_padding",
+          "type": "INT",
+          "widget": {
+            "name": "tile_padding"
+          },
+          "link": 369
+        },
+        {
+          "name": "seam_fix_mode",
+          "type": "COMBO",
+          "widget": {
+            "name": "seam_fix_mode"
+          },
+          "link": null
+        },
+        {
+          "name": "seam_fix_denoise",
+          "type": "FLOAT",
+          "widget": {
+            "name": "seam_fix_denoise"
+          },
+          "link": null
+        },
+        {
+          "name": "seam_fix_width",
+          "type": "INT",
+          "widget": {
+            "name": "seam_fix_width"
+          },
+          "link": null
+        },
+        {
+          "name": "seam_fix_mask_blur",
+          "type": "INT",
+          "widget": {
+            "name": "seam_fix_mask_blur"
+          },
+          "link": null
+        },
+        {
+          "name": "seam_fix_padding",
+          "type": "INT",
+          "widget": {
+            "name": "seam_fix_padding"
+          },
+          "link": null
+        },
+        {
+          "name": "force_uniform_tiles",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "force_uniform_tiles"
+          },
+          "link": null
+        },
+        {
+          "name": "tiled_decode",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "tiled_decode"
+          },
+          "link": null
+        },
+        {
+          "name": "batch_size",
+          "type": "INT",
+          "widget": {
+            "name": "batch_size"
+          },
+          "link": null
+        },
+        {
+          "name": "tile_skip_threshold",
+          "shape": 7,
+          "type": "FLOAT",
+          "widget": {
+            "name": "tile_skip_threshold"
+          },
+          "link": 377
+        },
+        {
+          "name": "highpass_noise_strength",
+          "shape": 7,
+          "type": "FLOAT",
+          "widget": {
+            "name": "highpass_noise_strength"
+          },
+          "link": 379
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "slot_index": 0,
+          "links": [
+            376
+          ]
+        }
+      ],
+      "title": "USDU 2x (no upscale while bypassed)",
+      "properties": {
+        "Node name for S&R": "WeightFerryUltimateSDUpscalePlus"
+      },
+      "widgets_values": [
+        2,
+        925941507370599,
+        "randomize",
+        16,
+        5,
+        "bleh_preset_0",
+        "tors",
+        0.38,
+        "Chess",
+        1024,
+        1024,
+        12,
+        32,
+        "None",
+        0.3,
+        64,
+        8,
+        16,
+        true,
+        true,
+        1,
+        0,
+        0
+      ]
+    },
+    {
+      "id": 87,
+      "type": "PrimitiveStringMultiline",
+      "pos": [
+        1031,
+        80
+      ],
+      "size": [
+        400,
+        260
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "value",
+          "type": "STRING",
+          "widget": {
+            "name": "value"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": [
+            433
+          ]
+        }
+      ],
+      "title": "Prompt",
+      "properties": {
+        "Node name for S&R": "PrimitiveStringMultiline"
+      },
+      "widgets_values": [
+        "masterpiece, best quality, safe, 1girl, original, solo, short bob hair, silver hair, green eyes, round glasses, cream knit sweater, long skirt, holding a teacup, sitting by a window, cafe interior, rainy day, warm lighting, gentle smile, looking at viewer"
+      ]
+    },
+    {
+      "id": 154,
+      "type": "easy loraStack",
+      "pos": [
+        20,
+        380
+      ],
+      "size": [
+        360,
+        680
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "optional_lora_stack",
+          "type": "LORA_STACK",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "lora_stack",
+          "type": "LORA_STACK",
+          "links": [
+            406
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "easy loraStack"
+      },
+      "widgets_values": [
+        true,
+        "simple",
+        2,
+        "None",
+        1.0,
+        1.0,
+        1.0,
+        "None",
+        0.8,
+        0.8,
+        0.8,
+        "None",
+        1.0,
+        1.0,
+        1.0,
+        "None",
+        1.0,
+        1.0,
+        1.0,
+        "None",
+        1.0,
+        1.0,
+        1.0,
+        "None",
+        1.0,
+        1.0,
+        1.0,
+        "None",
+        1.0,
+        1.0,
+        1.0,
+        "None",
+        1.0,
+        1.0,
+        1.0,
+        "None",
+        1.0,
+        1.0,
+        1.0,
+        "None",
+        1.0,
+        1.0,
+        1.0
+      ],
+      "title": "LoRA stack (add your LoRAs here)"
+    },
+    {
+      "id": 155,
+      "type": "easy loraStackApply",
+      "pos": [
+        498,
+        250
+      ],
+      "size": [
+        300,
+        80
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "lora_stack",
+          "type": "LORA_STACK",
+          "link": 406
+        },
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 443
+        },
+        {
+          "name": "optional_clip",
+          "type": "CLIP",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "links": [
+            459,
+            460
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "easy loraStackApply"
+      },
+      "widgets_values": [],
+      "title": "Apply LoRA stack"
+    },
+    {
+      "id": 160,
+      "type": "WeightFerryCFGEarlyStop",
+      "pos": [
+        2341,
+        414
+      ],
+      "size": [
+        345,
+        110
+      ],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 431
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            422
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "WeightFerryCFGEarlyStop"
+      },
+      "widgets_values": [
+        0.65,
+        "hard_stop"
+      ],
+      "title": "⚡ CFG early stop: base 65% (Ctrl+B = off)"
+    },
+    {
+      "id": 161,
+      "type": "WeightFerryCFGEarlyStop",
+      "pos": [
+        2716,
+        80
+      ],
+      "size": [
+        348,
+        110
+      ],
+      "flags": {},
+      "order": 18,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 435
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            418
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "WeightFerryCFGEarlyStop"
+      },
+      "widgets_values": [
+        0.5,
+        "hard_stop"
+      ],
+      "title": "⚡ CFG early stop: upscale 50% (Ctrl+B = off)"
+    },
+    {
+      "id": 157,
+      "type": "WeightFerryTaylorSeer",
+      "pos": [
+        2341,
+        80
+      ],
+      "size": [
+        320,
+        274
+      ],
+      "flags": {},
+      "order": 17,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 422
+        }
+      ],
+      "outputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "links": [
+            353
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "WeightFerryTaylorSeer"
+      },
+      "widgets_values": [
+        "adaptive",
+        0.06,
+        2,
+        1,
+        8,
+        1,
+        "cuda",
+        3
+      ],
+      "title": "⚡ TaylorSeer: base (Ctrl+B = off)"
+    },
+    {
+      "id": 165,
+      "type": "WeightFerryDiT",
+      "pos": [
+        498,
+        390
+      ],
+      "size": [
+        305,
+        322
+      ],
+      "flags": {},
+      "order": 21,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 462
+        }
+      ],
+      "outputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "links": [
+            431,
+            435
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "WeightFerryDiT"
+      },
+      "widgets_values": [
+        true,
+        true,
+        "Double Buffer (Async Prefetch, Recommended)",
+        8,
+        true,
+        "Compute dtype, LoRA baked (fast with LoRA)",
+        "RAM (all streamed blocks pinned in RAM)",
+        0.0,
+        "ComfyUI (Dynamic VRAM)",
+        false,
+        true,
+        3
+      ],
+      "title": "DiT layer streaming (auto config)"
+    },
+    {
+      "id": 166,
+      "type": "WeightFerryCLIPTextEncode",
+      "pos": [
+        1461,
+        80
+      ],
+      "size": [
+        320,
+        120
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 432
+        },
+        {
+          "name": "text",
+          "type": "STRING",
+          "widget": {
+            "name": "text"
+          },
+          "link": 433
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            289,
+            434
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "WeightFerryCLIPTextEncode"
+      },
+      "widgets_values": [
+        ""
+      ],
+      "title": "Positive"
+    },
+    {
+      "id": 167,
+      "type": "UNETLoader",
+      "pos": [
+        20,
+        230
+      ],
+      "size": [
+        300,
+        90
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "unet_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "unet_name"
+          },
+          "link": null
+        },
+        {
+          "name": "weight_dtype",
+          "type": "COMBO",
+          "widget": {
+            "name": "weight_dtype"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            442
+          ]
+        }
+      ],
+      "title": "UNET bf16 (default, official file)",
+      "properties": {
+        "Node name for S&R": "UNETLoader"
+      },
+      "widgets_values": [
+        "anima-base-v1.0.safetensors",
+        "default"
+      ]
+    },
+    {
+      "type": "easy anythingIndexSwitch",
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "value0",
+          "type": "*",
+          "link": 441
+        },
+        {
+          "name": "value1",
+          "type": "*",
+          "link": 442
+        }
+      ],
+      "outputs": [
+        {
+          "name": "value",
+          "type": "*",
+          "links": [
+            443
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "easy anythingIndexSwitch"
+      },
+      "id": 168,
+      "pos": [
+        498,
+        80
+      ],
+      "size": [
+        413,
+        110
+      ],
+      "widgets_values": [
+        1
+      ],
+      "title": "Model switch: 0 = fp8 / 1 = bf16 (default, official file)"
+    },
+    {
+      "type": "WeightFerrySamplerChoice",
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "sampler_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "sampler_name"
+          },
+          "link": null
+        },
+        {
+          "name": "scheduler",
+          "type": "COMBO",
+          "widget": {
+            "name": "scheduler"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "sampler_name",
+          "type": "*",
+          "links": [
+            444,
+            450
+          ]
+        },
+        {
+          "name": "scheduler",
+          "type": "*",
+          "links": [
+            445,
+            451
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "WeightFerrySamplerChoice"
+      },
+      "id": 169,
+      "size": [
+        320,
+        110
+      ],
+      "widgets_values": [
+        "real",
+        "tors"
+      ],
+      "title": "Shared sampler (base / upscale)",
+      "pos": [
+        1901,
+        80
+      ]
+    },
+    {
+      "type": "PrimitiveFloat",
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "value",
+          "type": "FLOAT",
+          "widget": {
+            "name": "value"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "FLOAT",
+          "type": "FLOAT",
+          "links": [
+            452,
+            466
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PrimitiveFloat"
+      },
+      "id": 170,
+      "pos": [
+        1901,
+        250
+      ],
+      "size": [
+        320,
+        80
+      ],
+      "widgets_values": [
+        5.0
+      ],
+      "title": "CFG (base / upscale)"
+    },
+    {
+      "type": "PrimitiveFloat",
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "value",
+          "type": "FLOAT",
+          "widget": {
+            "name": "value"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "FLOAT",
+          "type": "FLOAT",
+          "links": [
+            453,
+            454
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PrimitiveFloat"
+      },
+      "id": 171,
+      "pos": [
+        1461,
+        544
+      ],
+      "size": [
+        300,
+        80
+      ],
+      "widgets_values": [
+        2.0
+      ],
+      "title": "Upscale factor (USDU / tile calculator)"
+    },
+    {
+      "type": "PrimitiveInt",
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "value",
+          "type": "INT",
+          "widget": {
+            "name": "value"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            455,
+            456
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PrimitiveInt"
+      },
+      "id": 172,
+      "pos": [
+        1461,
+        260
+      ],
+      "size": [
+        300,
+        82
+      ],
+      "widgets_values": [
+        896,
+        "fixed"
+      ],
+      "title": "Resolution: width"
+    },
+    {
+      "type": "PrimitiveInt",
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "value",
+          "type": "INT",
+          "widget": {
+            "name": "value"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            457,
+            458
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PrimitiveInt"
+      },
+      "id": 173,
+      "pos": [
+        1461,
+        402
+      ],
+      "size": [
+        300,
+        82
+      ],
+      "widgets_values": [
+        1472,
+        "fixed"
+      ],
+      "title": "Resolution: height"
+    },
+    {
+      "type": "PrimitiveInt",
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "value",
+          "type": "INT",
+          "widget": {
+            "name": "value"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            470,
+            471,
+            472
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PrimitiveInt"
+      },
+      "id": 174,
+      "pos": [
+        3184,
+        80
+      ],
+      "size": [
+        300,
+        82
+      ],
+      "widgets_values": [
+        1,
+        "fixed"
+      ],
+      "title": "⚡ Turbo: 0 = off / 1 = on"
+    },
+    {
+      "type": "LoraLoaderModelOnly",
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 459
+        },
+        {
+          "name": "lora_name",
+          "type": "COMBO",
+          "widget": {
+            "name": "lora_name"
+          },
+          "link": null
+        },
+        {
+          "name": "strength_model",
+          "type": "FLOAT",
+          "widget": {
+            "name": "strength_model"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            461
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoraLoaderModelOnly"
+      },
+      "id": 175,
+      "pos": [
+        3184,
+        222
+      ],
+      "size": [
+        300,
+        110
+      ],
+      "widgets_values": [
+        "anima_turbo_4step_v3.safetensors",
+        0.8
+      ],
+      "title": "Turbo LoRA (strength 0.8)"
+    },
+    {
+      "type": "easy anythingIndexSwitch",
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "value0",
+          "type": "*",
+          "link": 460
+        },
+        {
+          "name": "value1",
+          "type": "*",
+          "link": 461
+        },
+        {
+          "name": "index",
+          "type": "INT",
+          "widget": {
+            "name": "index"
+          },
+          "link": 470
+        }
+      ],
+      "outputs": [
+        {
+          "name": "value",
+          "type": "*",
+          "links": [
+            462
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "easy anythingIndexSwitch"
+      },
+      "id": 176,
+      "pos": [
+        3514,
+        80
+      ],
+      "size": [
+        300,
+        110
+      ],
+      "widgets_values": [
+        0
+      ],
+      "title": "Turbo: model"
+    },
+    {
+      "type": "PrimitiveInt",
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "value",
+          "type": "INT",
+          "widget": {
+            "name": "value"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            463
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PrimitiveInt"
+      },
+      "id": 177,
+      "pos": [
+        3844,
+        80
+      ],
+      "size": [
+        300,
+        82
+      ],
+      "widgets_values": [
+        16,
+        "fixed"
+      ],
+      "title": "Base steps (normal)"
+    },
+    {
+      "type": "PrimitiveInt",
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "value",
+          "type": "INT",
+          "widget": {
+            "name": "value"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "INT",
+          "type": "INT",
+          "links": [
+            464
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PrimitiveInt"
+      },
+      "id": 178,
+      "pos": [
+        3844,
+        222
+      ],
+      "size": [
+        300,
+        82
+      ],
+      "widgets_values": [
+        6,
+        "fixed"
+      ],
+      "title": "Base steps (Turbo)"
+    },
+    {
+      "type": "easy anythingIndexSwitch",
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "value0",
+          "type": "*",
+          "link": 463
+        },
+        {
+          "name": "value1",
+          "type": "*",
+          "link": 464
+        },
+        {
+          "name": "index",
+          "type": "INT",
+          "widget": {
+            "name": "index"
+          },
+          "link": 471
+        }
+      ],
+      "outputs": [
+        {
+          "name": "value",
+          "type": "*",
+          "links": [
+            465
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "easy anythingIndexSwitch"
+      },
+      "id": 179,
+      "pos": [
+        4174,
+        80
+      ],
+      "size": [
+        300,
+        110
+      ],
+      "widgets_values": [
+        0
+      ],
+      "title": "Turbo: steps"
+    },
+    {
+      "type": "PrimitiveFloat",
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "value",
+          "type": "FLOAT",
+          "widget": {
+            "name": "value"
+          },
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "FLOAT",
+          "type": "FLOAT",
+          "links": [
+            467
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PrimitiveFloat"
+      },
+      "id": 180,
+      "pos": [
+        3844,
+        364
+      ],
+      "size": [
+        300,
+        80
+      ],
+      "widgets_values": [
+        1.0
+      ],
+      "title": "CFG (Turbo)"
+    },
+    {
+      "type": "easy anythingIndexSwitch",
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "value0",
+          "type": "*",
+          "link": 466
+        },
+        {
+          "name": "value1",
+          "type": "*",
+          "link": 467
+        },
+        {
+          "name": "index",
+          "type": "INT",
+          "widget": {
+            "name": "index"
+          },
+          "link": 472
+        }
+      ],
+      "outputs": [
+        {
+          "name": "value",
+          "type": "*",
+          "links": [
+            468
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "easy anythingIndexSwitch"
+      },
+      "id": 181,
+      "pos": [
+        4174,
+        250
+      ],
+      "size": [
+        300,
+        110
+      ],
+      "widgets_values": [
+        0
+      ],
+      "title": "Turbo: CFG"
+    }
+  ],
+  "links": [
+    [
+      22,
+      7,
+      0,
+      3,
+      2,
+      "CONDITIONING"
+    ],
+    [
+      193,
+      5,
+      0,
+      3,
+      3,
+      "LATENT"
+    ],
+    [
+      242,
+      3,
+      0,
+      73,
+      0,
+      "LATENT"
+    ],
+    [
+      245,
+      73,
+      0,
+      30,
+      0,
+      "IMAGE"
+    ],
+    [
+      254,
+      77,
+      0,
+      73,
+      1,
+      "VAE"
+    ],
+    [
+      258,
+      78,
+      0,
+      7,
+      0,
+      "CLIP"
+    ],
+    [
+      289,
+      166,
+      0,
+      100,
+      2,
+      "CONDITIONING"
+    ],
+    [
+      290,
+      7,
+      0,
+      100,
+      3,
+      "CONDITIONING"
+    ],
+    [
+      291,
+      77,
+      0,
+      100,
+      4,
+      "VAE"
+    ],
+    [
+      339,
+      128,
+      0,
+      3,
+      4,
+      "INT"
+    ],
+    [
+      340,
+      128,
+      0,
+      100,
+      7,
+      "INT"
+    ],
+    [
+      346,
+      143,
+      0,
+      9,
+      0,
+      "IMAGE"
+    ],
+    [
+      353,
+      157,
+      0,
+      3,
+      0,
+      "MODEL"
+    ],
+    [
+      367,
+      142,
+      0,
+      100,
+      14,
+      "INT"
+    ],
+    [
+      368,
+      142,
+      1,
+      100,
+      15,
+      "INT"
+    ],
+    [
+      369,
+      142,
+      2,
+      100,
+      17,
+      "INT"
+    ],
+    [
+      370,
+      142,
+      3,
+      100,
+      16,
+      "INT"
+    ],
+    [
+      376,
+      100,
+      0,
+      143,
+      1,
+      "IMAGE"
+    ],
+    [
+      377,
+      142,
+      4,
+      100,
+      26,
+      "FLOAT"
+    ],
+    [
+      379,
+      142,
+      5,
+      100,
+      27,
+      "FLOAT"
+    ],
+    [
+      382,
+      31,
+      0,
+      100,
+      5,
+      "UPSCALE_MODEL"
+    ],
+    [
+      406,
+      154,
+      0,
+      155,
+      0,
+      "LORA_STACK"
+    ],
+    [
+      418,
+      161,
+      0,
+      100,
+      1,
+      "MODEL"
+    ],
+    [
+      422,
+      160,
+      0,
+      157,
+      0,
+      "MODEL"
+    ],
+    [
+      431,
+      165,
+      0,
+      160,
+      0,
+      "MODEL"
+    ],
+    [
+      432,
+      78,
+      0,
+      166,
+      0,
+      "CLIP"
+    ],
+    [
+      433,
+      87,
+      0,
+      166,
+      1,
+      "STRING"
+    ],
+    [
+      434,
+      166,
+      0,
+      3,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      435,
+      165,
+      0,
+      161,
+      0,
+      "MODEL"
+    ],
+    [
+      438,
+      73,
+      0,
+      100,
+      0,
+      "IMAGE"
+    ],
+    [
+      439,
+      73,
+      0,
+      142,
+      0,
+      "IMAGE"
+    ],
+    [
+      440,
+      73,
+      0,
+      143,
+      0,
+      "IMAGE"
+    ],
+    [
+      441,
+      76,
+      0,
+      168,
+      0,
+      "MODEL"
+    ],
+    [
+      442,
+      167,
+      0,
+      168,
+      1,
+      "MODEL"
+    ],
+    [
+      443,
+      168,
+      0,
+      155,
+      1,
+      "*"
+    ],
+    [
+      444,
+      169,
+      0,
+      3,
+      7,
+      "*"
+    ],
+    [
+      445,
+      169,
+      1,
+      3,
+      8,
+      "*"
+    ],
+    [
+      450,
+      169,
+      0,
+      100,
+      10,
+      "*"
+    ],
+    [
+      451,
+      169,
+      1,
+      100,
+      11,
+      "*"
+    ],
+    [
+      452,
+      170,
+      0,
+      100,
+      9,
+      "FLOAT"
+    ],
+    [
+      453,
+      171,
+      0,
+      100,
+      6,
+      "FLOAT"
+    ],
+    [
+      454,
+      171,
+      0,
+      142,
+      2,
+      "FLOAT"
+    ],
+    [
+      455,
+      172,
+      0,
+      5,
+      0,
+      "INT"
+    ],
+    [
+      456,
+      172,
+      0,
+      142,
+      3,
+      "INT"
+    ],
+    [
+      457,
+      173,
+      0,
+      5,
+      1,
+      "INT"
+    ],
+    [
+      458,
+      173,
+      0,
+      142,
+      4,
+      "INT"
+    ],
+    [
+      459,
+      155,
+      0,
+      175,
+      0,
+      "MODEL"
+    ],
+    [
+      460,
+      155,
+      0,
+      176,
+      0,
+      "MODEL"
+    ],
+    [
+      461,
+      175,
+      0,
+      176,
+      1,
+      "MODEL"
+    ],
+    [
+      462,
+      176,
+      0,
+      165,
+      0,
+      "*"
+    ],
+    [
+      463,
+      177,
+      0,
+      179,
+      0,
+      "INT"
+    ],
+    [
+      464,
+      178,
+      0,
+      179,
+      1,
+      "INT"
+    ],
+    [
+      465,
+      179,
+      0,
+      3,
+      5,
+      "*"
+    ],
+    [
+      466,
+      170,
+      0,
+      181,
+      0,
+      "FLOAT"
+    ],
+    [
+      467,
+      180,
+      0,
+      181,
+      1,
+      "FLOAT"
+    ],
+    [
+      468,
+      181,
+      0,
+      3,
+      6,
+      "*"
+    ],
+    [
+      470,
+      174,
+      0,
+      176,
+      2,
+      "INT"
+    ],
+    [
+      471,
+      174,
+      0,
+      179,
+      2,
+      "INT"
+    ],
+    [
+      472,
+      174,
+      0,
+      181,
+      2,
+      "INT"
+    ]
+  ],
+  "groups": [
+    {
+      "id": 1,
+      "title": "1. Loading (precision switch: 0 = fp8 / 1 = bf16)",
+      "color": "#3f789e",
+      "flags": {},
+      "bounding": [
+        0,
+        0,
+        931,
+        1142
+      ]
+    },
+    {
+      "id": 2,
+      "title": "2. Prompt / resolution / upscale factor / seed",
+      "color": "#8a6e2f",
+      "flags": {},
+      "bounding": [
+        1011,
+        0,
+        790,
+        786
+      ]
+    },
+    {
+      "id": 3,
+      "title": "3. Sampler (quality)",
+      "color": "#a1309b",
+      "flags": {},
+      "bounding": [
+        1881,
+        0,
+        360,
+        350
+      ]
+    },
+    {
+      "id": 3,
+      "title": "4. ⚡ Speed-ups (Ctrl+B = off = quality first)",
+      "color": "#b58b2a",
+      "flags": {},
+      "bounding": [
+        2321,
+        0,
+        763,
+        544
+      ]
+    },
+    {
+      "id": 4,
+      "title": "5. Base generation",
+      "color": "#2f6e4a",
+      "flags": {},
+      "bounding": [
+        0,
+        1262,
+        1020,
+        610
+      ]
+    },
+    {
+      "id": 6,
+      "title": "6. Upscale (USDU, bypassed)",
+      "color": "#2f6e4a",
+      "flags": {},
+      "bounding": [
+        1100,
+        1262,
+        750,
+        950
+      ]
+    },
+    {
+      "id": 7,
+      "title": "7. Colour match / save",
+      "color": "#2f6e4a",
+      "flags": {},
+      "bounding": [
+        1930,
+        1262,
+        780,
+        700
+      ]
+    },
+    {
+      "id": 8,
+      "title": "⚡ Speed: Turbo (the Int at the top left: 1 = on / 0 = off)",
+      "color": "#3f789e",
+      "flags": {},
+      "bounding": [
+        3164,
+        0,
+        1330,
+        464
+      ]
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.6303940863128844,
+      "offset": [
+        430.34898845709796,
+        129.62855100321514
+      ]
+    },
+    "frontendVersion": "1.52.7",
+    "workflowRendererVersion": "LG"
+  },
+  "version": 0.4
+}

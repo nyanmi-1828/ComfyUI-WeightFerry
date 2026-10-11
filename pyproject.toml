@@ -1,0 +1,19 @@
+[project]
+name = "comfyui-weightferry"
+description = "Run diffusion transformers and LLM text encoders larger than your VRAM in ComfyUI by streaming their layers from RAM / SSD, bit-exact with ComfyUI; plus speed-ups for Anima (Cosmos-Predict2): fused block kernels, TaylorSeer, CFG early stop."
+version = "1.0.0"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+# Everything else comes with ComfyUI; optional extras (SageAttention, Triton / triton-windows, gguf for the GGUF
+# converter) are described in README.md and requirements.txt.
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/nyanmi-1828/ComfyUI-WeightFerry"
+Documentation = "https://github.com/nyanmi-1828/ComfyUI-WeightFerry#readme"
+"Bug Tracker" = "https://github.com/nyanmi-1828/ComfyUI-WeightFerry/issues"
+
+[tool.comfy]
+PublisherId = "nyanmi-1828"
+DisplayName = "ComfyUI-WeightFerry"
+Icon = "https://raw.githubusercontent.com/nyanmi-1828/ComfyUI-WeightFerry/main/assets/logo.png"

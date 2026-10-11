@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<title>WeightFerry</title>
+<rect width="512" height="512" rx="112" fill="#17324D"/>
+<path d="M80 348 Q98 328 116 348 T152 348 T188 348 T224 348 T260 348 T296 348 T332 348 T368 348 T404 348 T440 348" fill="none" stroke="#5FD3C6" stroke-width="14" stroke-linecap="round" opacity="1"/>
+<path d="M112 396 Q130 376 148 396 T184 396 T220 396 T256 396 T292 396 T328 396 T364 396 T400 396" fill="none" stroke="#5FD3C6" stroke-width="12" stroke-linecap="round" opacity="0.6"/>
+<path d="M88 244 L424 244 L380 308 L132 308 Z" fill="#F4F1EA"/>
+<rect x="176" y="114" width="160" height="32" rx="8" fill="#7FB3E8"/>
+<rect x="176" y="156" width="160" height="32" rx="8" fill="#E8735A"/>
+<rect x="176" y="198" width="160" height="32" rx="8" fill="#F2A541"/>
+</svg>
