@@ -54,6 +54,8 @@ _state = {"orig": None, "ops": None, "orig_gw": None, "stats": {"used": 0, "fall
 _LORA = True  # LoRA patches inside the kernel too (GGMLLayer.get_weight); module constant for benchmarks
 _CACHE_MB = None  # the LoRA weight cache budget; None = WEIGHTFERRY_GGUF_LORA_CACHE_MB (module constant for benchmarks)
 _cache = {"layers": weakref.WeakKeyDictionary(), "bytes": 0, "hooked": False}
+_FACTORS = None  # "pin" / "0": the LoRA factors pinned; None = WEIGHTFERRY_GGUF_LORA_FACTORS (constant for benchmarks)
+_factors = {}  # the pinned LoRA factors: id(factor) -> (weakref to it, key, pinned copy)
 
 
 def _get_kernel():
@@ -240,9 +242,10 @@ def dequantize_lora(data, qtype, oshape, mid_dtype, out_dtype, loras):
     n = n_out * n_in
     BLOCK = 1024
     _get_kernel()
+    mode = _factor_mode()
     for i, (up, down, sa) in enumerate(loras):
-        mat1 = up.to(dev, torch.float32)  # comfy.model_management.cast_to_device(v[0], device, float32)
-        mat2 = down.to(dev, torch.float32)
+        mat1 = _factor(up, dev, mode)  # comfy.model_management.cast_to_device(v[0], device, float32)
+        mat2 = _factor(down, dev, mode)
         diff = torch.mm(mat1.flatten(start_dim=1), mat2.flatten(start_dim=1))
         del mat1, mat2
         _kernel["add"][(triton.cdiv(n, BLOCK),)](
@@ -250,6 +253,36 @@ def dequantize_lora(data, qtype, oshape, mid_dtype, out_dtype, loras):
             MID=_DT[mid], OUT=_DT[out_dtype], BLOCK=BLOCK, num_warps=4)
         del diff
     return res
+
+
+def _factor_mode():
+    if _FACTORS is not None:
+        return _FACTORS
+    from ..core import env as _env
+    mode = (_env.get("WEIGHTFERRY_GGUF_LORA_FACTORS") or "0").strip().lower()
+    return mode if mode == "pin" else "0"
+
+
+def _factor(t, dev, mode):
+    """t.to(dev, float32), the LoRA factor as comfy casts it (the same values). ComfyUI-GGUF keeps the patches on the
+    offload device (patch_on_device off), so each use copies the factor from pageable RAM, a copy that waits for the
+    GPU queue to drain (cudaStreamSynchronize): GPU idle between the layers. mode "pin": a pinned RAM copy of the
+    factor (the RAM of the factor once more), made once and kept while the factor tensor lives (its identity and
+    storage checked on each use; comfy never changes LoRA factors in place), copied without that wait. "0": as comfy.
+    (Keeping the float32 factors on the GPU instead was slower and, outside ComfyUI's VRAM estimate, ran into VRAM
+    shortage: docs/history/g1_gguf_dequant_20261011.md.)"""
+    if mode == "0" or t.device.type != "cpu":
+        return t.to(dev, torch.float32)
+    store = _factors
+    hit = store.get(id(t))
+    key = (t.data_ptr(), _version(t), str(dev))
+    if hit is not None and hit[0]() is t and hit[1] == key:
+        held = hit[2]
+    else:
+        held = t.pin_memory()
+        # keyed by id (a WeakKeyDictionary would compare tensors with ==); the entry goes when the factor does
+        store[id(t)] = (weakref.ref(t, lambda _r, i=id(t), s=store: s.pop(i, None)), key, held)
+    return held.to(dev, non_blocking=True).to(torch.float32)
 
 
 def _patched_get_weight(orig):
