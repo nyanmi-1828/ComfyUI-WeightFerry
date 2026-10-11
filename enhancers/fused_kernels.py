@@ -147,7 +147,10 @@ def _get_kernels():
         x = _h4(x, G, 64)
         x = x * 0.0625
         # the division as compiled in comfy_kitchen (not IEEE div_rn: Triton's default division matched all values)
-        scale = tl.max(tl.max(tl.abs(x), axis=1), axis=0) / 127.0
+        # kitchen clamps the amax to bf16's largest finite value and the scale to at least 1e-30 (a zero row: scale
+        # 1e-30, not 0; the int8 values are 0 either way)
+        amax = tl.minimum(tl.max(tl.max(tl.abs(x), axis=1), axis=0), 3.38953139e38)
+        scale = tl.maximum(amax / 127.0, 1.0e-30)
         tl.store(sc_ptr + row, scale)
         sb = _r16(scale + tl.zeros((G, 256), dtype=tl.float32))
         v = tl.extra.cuda.libdevice.rint(_r16(_r16(x) / sb))
