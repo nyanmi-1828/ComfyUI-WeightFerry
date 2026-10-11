@@ -1,7 +1,9 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 nyanmi-1828
 # Re-implements the legacy-quant dequantisation of city96/ComfyUI-GGUF dequant.py ((c) City96, Apache-2.0) as one
-# Triton kernel per call: the same operations, dtypes and roundings. See THIRD_PARTY_NOTICES.md.
+# Triton kernel per call: the same operations, dtypes and roundings; and (2026-10-12) the LoRA application of ComfyUI
+# comfy/lora.py calculate_weight / comfy/weight_adapter/lora.py LoRAAdapter.calculate_weight (GPL-3.0) after its
+# torch.mm. See THIRD_PARTY_NOTICES.md.
 """
 GGUF dequantisation in one Triton kernel (WEIGHTFERRY_GGUF_TRITON, on by default since 2026-10-12; 0 turns it off).
 
@@ -20,6 +22,14 @@ reads the blocks once and writes the weight once, with the same arithmetic as Co
   explicit conversions so the compiler cannot drop one.
 
 Only the five legacy formats; K-quants and anything else keep ComfyUI-GGUF's code, as do CPU tensors.
+
+LoRA (2026-10-12): ComfyUI-GGUF's GGMLLayer.get_weight dequantises, then applies the patches with
+comfy.lora.calculate_weight on every use. For plain LoRA patches (no DoRA / mid weight / reshape / offset /
+function / strength_model) the difference stays comfy's own torch.mm(up, down) in float32 (cuBLAS chooses its order:
+a sequential fma matched it on random factors but not on a real rank-32 LoRA, so it is not reproduced), and the
+dequantisation, the scale by float32(strength * alpha), the cast to the weight dtype and the add run in one kernel
+(each further LoRA in one more). The same bits on every layer of Anima Q8_0 with the workflow LoRAs; Anima resident
+x1.011 (Q5_1) / x1.012 (Q8_0) / x1.005 (Q4_1): most of the LoRA cost is the per-layer CPU work, not the GPU passes.
 """
 
 import sys
@@ -39,7 +49,8 @@ _FORMATS = {2: ("Q4_0", 18, False, -1, 2, 8, False), 3: ("Q4_1", 20, True, -1, 4
             8: ("Q8_0", 34, False, -1, 2, 0, True)}
 _DT = {torch.float16: 0, torch.bfloat16: 1, torch.float32: 2}
 _kernel = {}
-_state = {"orig": None, "ops": None, "stats": {"used": 0, "fallback": 0}}
+_state = {"orig": None, "ops": None, "orig_gw": None, "stats": {"used": 0, "fallback": 0}}
+_LORA = True  # LoRA patches inside the kernel too (GGMLLayer.get_weight); module constant for benchmarks
 
 
 def _get_kernel():
@@ -66,6 +77,49 @@ def _get_kernel():
         lo = tl.load(src + off).to(tl.uint16)
         hi = tl.load(src + off + 1).to(tl.uint16)
         return ((hi << 8) | lo).to(tl.float16, bitcast=True).to(tl.float32)
+
+    @triton.jit
+    def _f16m(src, off, m):
+        lo = tl.load(src + off, mask=m, other=0).to(tl.uint16)
+        hi = tl.load(src + off + 1, mask=m, other=0).to(tl.uint16)
+        return ((hi << 8) | lo).to(tl.float16, bitcast=True).to(tl.float32)
+
+    @triton.jit
+    def _deq_add(src, diff, out, n, sa, DEQ: tl.constexpr, TS: tl.constexpr, HAS_M: tl.constexpr, QH: tl.constexpr,
+                 QS: tl.constexpr, SUB: tl.constexpr, IS_Q8: tl.constexpr, MID: tl.constexpr, OUT: tl.constexpr,
+                 BLOCK: tl.constexpr):
+        # w = w + (sa * diff).to(w.dtype) on a flat weight of n values (comfy's LoRA calculate_weight after its
+        # torch.mm, the float32 diff given): w dequantised here first (DEQ, as _deq does) or read from out (a later
+        # LoRA); every result rounded to the weight dtype
+        lin = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
+        m = lin < n
+        if DEQ:
+            base = (lin // 32) * TS
+            v = lin % 32
+            d = _round(_f16m(src, base, m), MID)
+            if IS_Q8:
+                q = tl.load(src + base + QS + v, mask=m, other=0).to(tl.int8, bitcast=True).to(tl.float32)
+            else:
+                byte = tl.load(src + base + QS + (v % 16), mask=m, other=0).to(tl.int32)
+                nib = (byte >> ((v // 16) * 4).to(tl.int32)) & 0xF
+                if QH >= 0:
+                    hb = tl.load(src + base + QH + (v // 8), mask=m, other=0).to(tl.int32)
+                    nib = nib | (((hb >> (v % 8).to(tl.int32)) & 1) << 4)
+                q = (nib - SUB).to(tl.float32)
+            x = _round(d * q, MID)
+            if HAS_M:
+                x = _round(x + _round(_f16m(src, base + 2, m), MID), MID)
+            w = _round(x, OUT)
+        else:
+            w = tl.load(out + lin, mask=m, other=0.0).to(tl.float32)
+        dl = tl.load(diff + lin, mask=m, other=0.0)
+        w = _round(w + _round(dl * sa, OUT), OUT)
+        if OUT == 0:
+            tl.store(out + lin, w.to(tl.float16), mask=m)
+        elif OUT == 1:
+            tl.store(out + lin, w.to(tl.bfloat16), mask=m)
+        else:
+            tl.store(out + lin, w, mask=m)
 
     @triton.jit
     def _deq(src, out, n_blocks, TS: tl.constexpr, HAS_M: tl.constexpr, QH: tl.constexpr, QS: tl.constexpr,
@@ -102,6 +156,7 @@ def _get_kernel():
             tl.store(o, x, mask=m2)
 
     _kernel["k"] = _deq
+    _kernel["add"] = _deq_add
     return _deq
 
 
@@ -127,6 +182,102 @@ def dequantize(data, qtype, oshape, mid_dtype, out_dtype):
     _get_kernel()[(triton.cdiv(n_blocks, bb),)](raw, res, n_blocks, TS=ts, HAS_M=has_m, QH=qh, QS=qs, SUB=sub,
                                                 IS_Q8=is_q8, MID=_DT[mid], OUT=_DT[out], BB=bb, num_warps=4)
     return res
+
+
+def lora_factors(patch_list, n_out, n_in):
+    """[(up, down, strength * alpha)] when every patch is a plain LoRA that comfy.lora.calculate_weight applies as
+    weight += ((strength * alpha) * (up @ down)).type(weight.dtype) on a 2-D weight (no DoRA, mid weight, reshape,
+    offset, function or strength_model), else None."""
+    out = []
+    for p in patch_list:
+        if not isinstance(p, tuple) or len(p) != 5:
+            return None
+        strength, v, strength_model, offset, function = p
+        if strength_model != 1.0 or offset is not None or function is not None or type(v).__name__ != "LoRAAdapter":
+            return None
+        w = getattr(v, "weights", None)
+        if not isinstance(w, (tuple, list)) or len(w) < 6 or w[3] is not None or w[4] is not None or w[5] is not None:
+            return None
+        up, down, alpha_raw = w[0], w[1], w[2]
+        if (not torch.is_tensor(up) or not torch.is_tensor(down) or up.dim() != 2 or down.dim() != 2
+                or up.shape[0] != n_out or down.shape[1] != n_in or up.shape[1] != down.shape[0]
+                or not isinstance(strength, (int, float)) or isinstance(strength, bool)):
+            return None
+        if alpha_raw is None:
+            alpha = 1.0
+        elif isinstance(alpha_raw, (int, float)) and not isinstance(alpha_raw, bool):
+            alpha = alpha_raw / down.shape[0]
+        else:
+            return None
+        out.append((up, down, strength * alpha))
+    return out
+
+
+def dequantize_lora(data, qtype, oshape, mid_dtype, out_dtype, loras):
+    """ComfyUI-GGUF's get_weight with LoRA patches (dequantize, then comfy.lora.calculate_weight with the float32
+    intermediate): each LoRA difference by the same torch.mm comfy calls (its bits are cuBLAS's to choose; not
+    reproduced), the dequantisation and the first LoRA's scale / cast / add in one kernel, each further LoRA's in
+    one more kernel (one float32 difference alive at a time, as in comfy's loop). The same bits; None when not that
+    case."""
+    fmt = _FORMATS.get(int(qtype)) if qtype is not None else None
+    if fmt is None or triton is None or not data.is_cuda or len(oshape) != 2 or not loras:
+        return None
+    mid = mid_dtype if mid_dtype is not None else torch.float16
+    if mid not in _DT or out_dtype not in _DT:
+        return None
+    n_out, n_in = int(oshape[0]), int(oshape[1])
+    if n_in % 32:
+        return None
+    _name, ts, has_m, qh, qs, sub, is_q8 = fmt
+    raw = data.reshape(-1).view(torch.uint8) if data.is_contiguous() else None
+    if raw is None or raw.numel() != n_out * n_in // 32 * ts:
+        return None
+    dev = data.device
+    res = torch.empty((n_out, n_in), dtype=out_dtype, device=dev)
+    n = n_out * n_in
+    BLOCK = 1024
+    _get_kernel()
+    for i, (up, down, sa) in enumerate(loras):
+        mat1 = up.to(dev, torch.float32)  # comfy.model_management.cast_to_device(v[0], device, float32)
+        mat2 = down.to(dev, torch.float32)
+        diff = torch.mm(mat1.flatten(start_dim=1), mat2.flatten(start_dim=1))
+        del mat1, mat2
+        _kernel["add"][(triton.cdiv(n, BLOCK),)](
+            raw, diff, res, n, float(sa), DEQ=(i == 0), TS=ts, HAS_M=has_m, QH=qh, QS=qs, SUB=sub, IS_Q8=is_q8,
+            MID=_DT[mid], OUT=_DT[out_dtype], BLOCK=BLOCK, num_warps=4)
+        del diff
+    return res
+
+
+def _patched_get_weight(orig):
+    def get_weight(self, tensor, dtype):
+        if tensor is None:
+            return None
+        pats = getattr(tensor, "patches", None)
+        qtype = getattr(tensor, "tensor_type", None)
+        if (pats and getattr(self, "patch_dtype", None) is None and qtype is not None and int(qtype) in _FORMATS
+                and isinstance(dtype, torch.dtype) and getattr(tensor, "is_cuda", False)):
+            mid = dtype if self.dequant_dtype == "target" else self.dequant_dtype
+            if mid is None or isinstance(mid, torch.dtype):
+                oshape = getattr(tensor, "tensor_shape", tensor.shape)
+                patch_list = []
+                for patches, _key in pats:
+                    patch_list += list(patches)
+                loras = lora_factors(patch_list, *oshape) if len(oshape) == 2 else None
+                if loras:
+                    try:
+                        out = dequantize_lora(tensor.data, qtype, oshape, mid, dtype, loras)
+                    except Exception as exc:  # noqa: BLE001 -- ComfyUI-GGUF's own code instead
+                        from ..utils.logging import log_warn
+                        log_warn(f"GGUF Triton dequant + LoRA: {exc!r}; ComfyUI-GGUF's code for this tensor.")
+                        out = None
+                    if out is not None:
+                        _state["stats"]["lora_used"] = _state["stats"].get("lora_used", 0) + 1
+                        return out
+                _state["stats"]["lora_fallback"] = _state["stats"].get("lora_fallback", 0) + 1
+        return orig(self, tensor, dtype)
+    get_weight._weightferry = True
+    return get_weight
 
 
 def _patched(orig):
@@ -169,12 +320,19 @@ def install(force=False):
         return True
     _state["orig"], _state["ops"] = ops.dequantize_tensor, ops
     ops.dequantize_tensor = _patched(ops.dequantize_tensor)
+    layer = getattr(ops, "GGMLLayer", None)
+    if _LORA and layer is not None and not getattr(layer.get_weight, "_weightferry", False):
+        _state["orig_gw"] = layer.get_weight
+        layer.get_weight = _patched_get_weight(layer.get_weight)
     log_info("GGUF Triton dequant: ComfyUI-GGUF's Q4_0 / Q4_1 / Q5_0 / Q5_1 / Q8_0 dequantisation in one kernel "
              "(WEIGHTFERRY_GGUF_TRITON).")
     return True
 
 
 def uninstall():
+    if _state["ops"] is not None and _state.get("orig_gw") is not None:
+        _state["ops"].GGMLLayer.get_weight = _state["orig_gw"]
+        _state["orig_gw"] = None
     if _state["ops"] is not None and _state["orig"] is not None:
         _state["ops"].dequantize_tensor = _state["orig"]
     _state["orig"] = _state["ops"] = None
