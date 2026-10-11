@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # Copyright (c) 2026 nyanmi-1828
-# Re-implements the legacy-quant dequantisation of city96/ComfyUI-GGUF dequant.py ((c) City96, Apache-2.0) as one
-# Triton kernel per call: the same operations, dtypes and roundings; and (2026-10-12) the LoRA application of ComfyUI
+# Re-implements the legacy-quant (and, 2026-10-12, K-quant) dequantisation of city96/ComfyUI-GGUF dequant.py ((c)
+# City96, Apache-2.0) as one Triton kernel per call: the same operations, dtypes and roundings; and (2026-10-12) the
+# LoRA application of ComfyUI
 # comfy/lora.py calculate_weight / comfy/weight_adapter/lora.py LoRAAdapter.calculate_weight (GPL-3.0) after its
 # torch.mm. See THIRD_PARTY_NOTICES.md.
 """
@@ -21,7 +22,9 @@ reads the blocks once and writes the weight once, with the same arithmetic as Co
   then + m likewise (Q4_1 / Q5_1), then the cast to the layer's dtype -- each rounding to nearest even, done with
   explicit conversions so the compiler cannot drop one.
 
-Only the five legacy formats; K-quants and anything else keep ComfyUI-GGUF's code, as do CPU tensors.
+The five legacy formats; the K-quants Q2_K / Q3_K / Q4_K / Q5_K / Q6_K too with WEIGHTFERRY_GGUF_KQUANTS=1 (off by
+default; 2026-10-12: the same bits on synthetic blocks of each in every dtype and on every tensor of Wan 2.1 14B
+Q4_K_M, dequantisation x8, streamed at 4 GB x1.40). Anything else keeps ComfyUI-GGUF's code, as do CPU tensors.
 
 LoRA (2026-10-12): ComfyUI-GGUF's GGMLLayer.get_weight dequantises, then applies the patches with
 comfy.lora.calculate_weight on every use. For plain LoRA patches (no DoRA / mid weight / reshape / offset /
@@ -48,6 +51,9 @@ except Exception:  # noqa: BLE001
 _FORMATS = {2: ("Q4_0", 18, False, -1, 2, 8, False), 3: ("Q4_1", 20, True, -1, 4, 0, False),
             6: ("Q5_0", 22, False, 2, 6, 16, False), 7: ("Q5_1", 24, True, 4, 8, 0, False),
             8: ("Q8_0", 34, False, -1, 2, 0, True)}
+# K-quants (2026-10-12, WEIGHTFERRY_GGUF_KQUANTS, off): GGML type id -> name, bytes per block of 256 values
+_KFORMATS = {10: ("Q2_K", 84), 11: ("Q3_K", 110), 12: ("Q4_K", 144), 13: ("Q5_K", 176), 14: ("Q6_K", 210)}
+_KQUANTS = None  # None = WEIGHTFERRY_GGUF_KQUANTS (module constant for benchmarks)
 _DT = {torch.float16: 0, torch.bfloat16: 1, torch.float32: 2}
 _kernel = {}
 _state = {"orig": None, "ops": None, "orig_gw": None, "stats": {"used": 0, "fallback": 0}}
@@ -160,14 +166,144 @@ def _get_kernel():
         else:
             tl.store(o, x, mask=m2)
 
+    @triton.jit
+    def _sc(src, base, sub, m):
+        # the 6-bit scale of sub-block sub (0..7) of a Q4_K / Q5_K block, as ComfyUI-GGUF's get_scale_min
+        lo = sub < 4
+        j = tl.where(lo, sub, sub - 4)
+        a = tl.load(src + base + 4 + tl.where(lo, j, 8 + j), mask=m, other=0).to(tl.int32)
+        b = tl.load(src + base + 4 + j, mask=m & (sub >= 4), other=0).to(tl.int32)
+        return tl.where(lo, a & 63, (a & 0xF) | ((b >> 2) & 0x30))
+
+    @triton.jit
+    def _mn(src, base, sub, m):
+        # the 6-bit minimum of sub-block sub of a Q4_K / Q5_K block (get_scale_min)
+        lo = sub < 4
+        j = tl.where(lo, sub, sub - 4)
+        a = tl.load(src + base + 4 + tl.where(lo, 4 + j, 8 + j), mask=m, other=0).to(tl.int32)
+        b = tl.load(src + base + 8 + j, mask=m & (sub >= 4), other=0).to(tl.int32)
+        return tl.where(lo, a & 63, (a >> 4) | ((b >> 2) & 0x30))
+
+    @triton.jit
+    def _deq_k(src, out, n, FMT: tl.constexpr, MID: tl.constexpr, OUT: tl.constexpr, BLOCK: tl.constexpr):
+        # ComfyUI-GGUF's dequantize_blocks_<FMT> on a flat weight of n values (blocks of 256), each PyTorch
+        # operation's rounding to the dequant dtype MID done explicitly, then the cast to OUT. FMT: the GGML type id,
+        # 10 Q2_K, 11 Q3_K, 12 Q4_K, 13 Q5_K, 14 Q6_K
+        lin = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
+        m = lin < n
+        v = (lin % 256).to(tl.int32)
+        if FMT == 12 or FMT == 13:  # Q4_K (144 bytes) / Q5_K (176): d, dmin, 12 scale bytes, [qh 32], qs 128
+            if FMT == 12:
+                base = (lin // 256) * 144
+                qs_off = 16
+            else:
+                base = (lin // 256) * 176
+                qs_off = 48
+            sub = v // 32
+            byte = tl.load(src + base + qs_off + (sub // 2) * 32 + v % 32, mask=m, other=0).to(tl.int32)
+            q = (byte >> ((sub % 2) * 4)) & 0xF
+            if FMT == 13:
+                hb = tl.load(src + base + 16 + v % 32, mask=m, other=0).to(tl.int32)
+                q = q | (((hb >> sub) & 1) << 4)
+            d = _round(_f16m(src, base, m), MID)
+            dmin = _round(_f16m(src, base + 2, m), MID)
+            ds = _round(d * _sc(src, base, sub, m).to(tl.float32), MID)
+            dm = _round(dmin * _mn(src, base, sub, m).to(tl.float32), MID)
+            x = _round(_round(ds * q.to(tl.float32), MID) - dm, MID)
+        elif FMT == 14:  # Q6_K (210 bytes): ql 128, qh 64, 16 int8 scales, d
+            base = (lin // 256) * 210
+            h = v // 128
+            r = v % 128
+            lo = tl.load(src + base + h * 64 + r % 64, mask=m, other=0).to(tl.int32)
+            lo = (lo >> ((r // 64) * 4)) & 0xF
+            hi = tl.load(src + base + 128 + h * 32 + r % 32, mask=m, other=0).to(tl.int32)
+            hi = (hi >> ((r // 32) * 2)) & 3
+            q = (lo | (hi << 4)) - 32
+            sc = tl.load(src + base + 192 + v // 16, mask=m, other=0).to(tl.int8, bitcast=True).to(tl.float32)
+            d = _round(_round(_f16m(src, base + 208, m), MID) * sc, MID)
+            x = _round(d * q.to(tl.float32), MID)
+        elif FMT == 11:  # Q3_K (110 bytes): hmask 32, qs 64, 12 scale bytes, d
+            base = (lin // 256) * 110
+            i = v // 16
+            ls = tl.load(src + base + 96 + i % 8, mask=m, other=0).to(tl.int32)
+            ls = (ls >> ((i // 8) * 4)) & 0xF
+            hs = tl.load(src + base + 104 + i % 4, mask=m, other=0).to(tl.int32)
+            hs = (hs >> ((i // 4) * 2)) & 3
+            sc = (ls | (hs << 4)) - 32
+            d = _round(_round(_f16m(src, base + 108, m), MID) * sc.to(tl.float32), MID)
+            r = v % 128
+            ql = tl.load(src + base + 32 + (v // 128) * 32 + r % 32, mask=m, other=0).to(tl.int32)
+            ql = (ql >> ((r // 32) * 2)) & 3
+            hb = tl.load(src + base + v % 32, mask=m, other=0).to(tl.int32)
+            hb = ((hb >> (v // 32)) & 1) ^ 1
+            q = ql - (hb << 2)
+            x = _round(d * q.to(tl.float32), MID)
+        else:  # Q2_K (84 bytes): 16 scale bytes, qs 64, d, dmin
+            base = (lin // 256) * 84
+            sb = tl.load(src + base + v // 16, mask=m, other=0).to(tl.int32)
+            dl = _round(_round(_f16m(src, base + 80, m), MID) * (sb & 0xF).to(tl.float32), MID)
+            ml = _round(_round(_f16m(src, base + 82, m), MID) * (sb >> 4).to(tl.float32), MID)
+            r = v % 128
+            qb = tl.load(src + base + 16 + (v // 128) * 32 + r % 32, mask=m, other=0).to(tl.int32)
+            q = (qb >> ((r // 32) * 2)) & 3
+            x = _round(_round(dl * q.to(tl.float32), MID) - ml, MID)
+        w = _round(x, OUT)
+        if OUT == 0:
+            tl.store(out + lin, w.to(tl.float16), mask=m)
+        elif OUT == 1:
+            tl.store(out + lin, w.to(tl.bfloat16), mask=m)
+        else:
+            tl.store(out + lin, w, mask=m)
+
     _kernel["k"] = _deq
     _kernel["add"] = _deq_add
+    _kernel["kq"] = _deq_k
     return _deq
 
 
+def _kquants():
+    if _KQUANTS is not None:
+        return _KQUANTS
+    from ..core import env as _env
+    return _env.get("WEIGHTFERRY_GGUF_KQUANTS") == "1"
+
+
+def _supported(qtype):
+    """Whether this GGML type is dequantised here: the legacy formats, the K-quants with WEIGHTFERRY_GGUF_KQUANTS."""
+    q = int(qtype)
+    return q in _FORMATS or (q in _KFORMATS and _kquants())
+
+
+def _dequantize_k(data, qtype, oshape, mid, out):
+    """dequantize() for a K-quant (_KFORMATS), or None when the data does not match the shape."""
+    q = int(qtype)
+    raw = data.reshape(-1).view(torch.uint8) if data.is_contiguous() else None
+    ts = _KFORMATS[q][1]
+    if raw is None or raw.numel() % ts:
+        return None
+    n = raw.numel() // ts * 256
+    if n != int(torch.Size(oshape).numel()):
+        return None
+    res = torch.empty(tuple(oshape), dtype=out, device=data.device)
+    BLOCK = 1024
+    _get_kernel()
+    # no fused multiply-add: every product is rounded on its own, as PyTorch's separate operations do
+    _kernel["kq"][(triton.cdiv(n, BLOCK),)](raw, res, n, FMT=q, MID=_DT[mid], OUT=_DT[out], BLOCK=BLOCK,
+                                           num_warps=4, enable_fp_fusion=False)
+    return res
+
+
 def dequantize(data, qtype, oshape, mid_dtype, out_dtype):
-    """ComfyUI-GGUF's dequantize(data, qtype, oshape, dtype=mid_dtype).to(out_dtype) for a legacy format, or None
-    when this is not that case (other formats, CPU data, dtypes)."""
+    """ComfyUI-GGUF's dequantize(data, qtype, oshape, dtype=mid_dtype).to(out_dtype) for a legacy format (or a
+    K-quant with WEIGHTFERRY_GGUF_KQUANTS), or None when this is not that case (other formats, CPU data, dtypes)."""
+    if qtype is not None and int(qtype) in _KFORMATS:
+        if not _kquants() or triton is None or not data.is_cuda:
+            return None
+        mid = mid_dtype if mid_dtype is not None else torch.float16
+        out = out_dtype if out_dtype is not None else mid
+        if mid not in _DT or out not in _DT:
+            return None
+        return _dequantize_k(data, qtype, oshape, mid, out)
     fmt = _FORMATS.get(int(qtype)) if qtype is not None else None
     if fmt is None or triton is None or not data.is_cuda:
         return None
@@ -223,12 +359,18 @@ def dequantize_lora(data, qtype, oshape, mid_dtype, out_dtype, loras):
     intermediate): each LoRA difference by the same torch.mm comfy calls (its bits are cuBLAS's to choose; not
     reproduced), the dequantisation and the first LoRA's scale / cast / add in one kernel, each further LoRA's in
     one more kernel (one float32 difference alive at a time, as in comfy's loop). The same bits; None when not that
-    case."""
-    fmt = _FORMATS.get(int(qtype)) if qtype is not None else None
-    if fmt is None or triton is None or not data.is_cuda or len(oshape) != 2 or not loras:
+    case. A K-quant (WEIGHTFERRY_GGUF_KQUANTS) is dequantised by its own kernel first and every LoRA added by one
+    more."""
+    if triton is None or not data.is_cuda or len(oshape) != 2 or not loras or qtype is None:
         return None
     mid = mid_dtype if mid_dtype is not None else torch.float16
     if mid not in _DT or out_dtype not in _DT:
+        return None
+    if int(qtype) in _KFORMATS:
+        res = _dequantize_k(data, qtype, oshape, mid, out_dtype) if _kquants() else None
+        return None if res is None else _add_loras(res, res, loras, False, _FORMATS[8], mid)
+    fmt = _FORMATS.get(int(qtype))
+    if fmt is None:
         return None
     n_out, n_in = int(oshape[0]), int(oshape[1])
     if n_in % 32:
@@ -237,9 +379,16 @@ def dequantize_lora(data, qtype, oshape, mid_dtype, out_dtype, loras):
     raw = data.reshape(-1).view(torch.uint8) if data.is_contiguous() else None
     if raw is None or raw.numel() != n_out * n_in // 32 * ts:
         return None
-    dev = data.device
-    res = torch.empty((n_out, n_in), dtype=out_dtype, device=dev)
-    n = n_out * n_in
+    res = torch.empty((n_out, n_in), dtype=out_dtype, device=data.device)
+    return _add_loras(raw, res, loras, True, fmt, mid)
+
+
+def _add_loras(raw, res, loras, deq_first, fmt, mid):
+    """res += each LoRA's difference as comfy.lora.calculate_weight adds it, the first one inside the legacy
+    dequantisation of raw (format fmt) when deq_first, else on the weight already in res."""
+    _name, ts, has_m, qh, qs, sub, is_q8 = fmt
+    dev = res.device
+    n = res.numel()
     BLOCK = 1024
     _get_kernel()
     mode = _factor_mode()
@@ -249,8 +398,8 @@ def dequantize_lora(data, qtype, oshape, mid_dtype, out_dtype, loras):
         diff = torch.mm(mat1.flatten(start_dim=1), mat2.flatten(start_dim=1))
         del mat1, mat2
         _kernel["add"][(triton.cdiv(n, BLOCK),)](
-            raw, diff, res, n, float(sa), DEQ=(i == 0), TS=ts, HAS_M=has_m, QH=qh, QS=qs, SUB=sub, IS_Q8=is_q8,
-            MID=_DT[mid], OUT=_DT[out_dtype], BLOCK=BLOCK, num_warps=4)
+            raw, diff, res, n, float(sa), DEQ=(deq_first and i == 0), TS=ts, HAS_M=has_m, QH=qh, QS=qs, SUB=sub,
+            IS_Q8=is_q8, MID=_DT[mid], OUT=_DT[res.dtype], BLOCK=BLOCK, num_warps=4)
         del diff
     return res
 
@@ -291,7 +440,7 @@ def _patched_get_weight(orig):
             return None
         pats = getattr(tensor, "patches", None)
         qtype = getattr(tensor, "tensor_type", None)
-        if (pats and getattr(self, "patch_dtype", None) is None and qtype is not None and int(qtype) in _FORMATS
+        if (pats and getattr(self, "patch_dtype", None) is None and qtype is not None and _supported(qtype)
                 and isinstance(dtype, torch.dtype) and getattr(tensor, "is_cuda", False)):
             mid = dtype if self.dequant_dtype == "target" else self.dequant_dtype
             if mid is None or isinstance(mid, torch.dtype):
@@ -422,7 +571,7 @@ def _patched_cast_bias_weight(orig):
 def _patched(orig):
     def dequantize_tensor(tensor, dtype=None, dequant_dtype=None):
         qtype = getattr(tensor, "tensor_type", None)
-        if qtype is not None and int(qtype) in _FORMATS and isinstance(tensor, torch.Tensor):
+        if qtype is not None and _supported(qtype) and isinstance(tensor, torch.Tensor):
             mid = dtype if dequant_dtype == "target" else dequant_dtype
             if mid is None or isinstance(mid, torch.dtype):
                 oshape = getattr(tensor, "tensor_shape", tensor.shape)
