@@ -33,6 +33,7 @@ x1.011 (Q5_1) / x1.012 (Q8_0) / x1.005 (Q4_1): most of the LoRA cost is the per-
 """
 
 import sys
+import weakref
 
 import torch
 
@@ -51,6 +52,8 @@ _DT = {torch.float16: 0, torch.bfloat16: 1, torch.float32: 2}
 _kernel = {}
 _state = {"orig": None, "ops": None, "orig_gw": None, "stats": {"used": 0, "fallback": 0}}
 _LORA = True  # LoRA patches inside the kernel too (GGMLLayer.get_weight); module constant for benchmarks
+_CACHE_MB = None  # the LoRA weight cache budget; None = WEIGHTFERRY_GGUF_LORA_CACHE_MB (module constant for benchmarks)
+_cache = {"layers": weakref.WeakKeyDictionary(), "bytes": 0, "hooked": False}
 
 
 def _get_kernel():
@@ -280,6 +283,109 @@ def _patched_get_weight(orig):
     return get_weight
 
 
+def _cache_budget():
+    if _CACHE_MB is not None:
+        mb = _CACHE_MB
+    else:
+        from ..core import env as _env
+        try:
+            mb = float(_env.get("WEIGHTFERRY_GGUF_LORA_CACHE_MB") or 0)
+        except ValueError:
+            mb = 0
+    return int(max(0.0, mb) * 2 ** 20)
+
+
+def clear_cache():
+    """Drop every cached LoRA weight (ComfyUI frees memory / unloads models: see _hook_comfy_memory)."""
+    _cache["layers"] = weakref.WeakKeyDictionary()
+    _cache["bytes"] = 0
+
+
+def _hook_comfy_memory():
+    """Clear the cache whenever ComfyUI frees memory or unloads models, so it never holds VRAM ComfyUI wants."""
+    if _cache["hooked"]:
+        return
+    import comfy.model_management as mm
+    for name in ("free_memory", "unload_all_models", "soft_empty_cache"):
+        fn = getattr(mm, name, None)
+        if fn is None or getattr(fn, "_weightferry_cache", False):
+            continue
+
+        def wrapped(*a, _fn=fn, **k):
+            if _cache["bytes"]:
+                clear_cache()
+            return _fn(*a, **k)
+        wrapped._weightferry_cache = True
+        setattr(mm, name, wrapped)
+    _cache["hooked"] = True
+
+
+def _version(t):
+    try:
+        return t._version
+    except RuntimeError:  # inference tensors (ComfyUI runs under torch.inference_mode) keep no version counter
+        return None
+
+
+def _patch_key(pats):
+    """What the patched weight depends on besides the quantised weight: every patch's strength, adapter object,
+    strength_model, offset, function and the identity / version of the adapter's tensors."""
+    key = []
+    for patches, k in pats:
+        for p in patches:
+            if not isinstance(p, tuple):
+                return None
+            v = p[1]
+            ts = getattr(v, "weights", v if isinstance(v, (tuple, list)) else ())
+            tens = tuple((id(t), t.data_ptr(), _version(t)) for t in ts if torch.is_tensor(t))
+            key.append((k, p[0], id(v), p[2], p[3], id(p[4]) if p[4] is not None else None, tens))
+    return tuple(key)
+
+
+def _patched_cast_bias_weight(orig):
+    def cast_bias_weight(s, input=None, dtype=None, device=None, bias_dtype=None):
+        budget = _cache_budget()
+        w = getattr(s, "weight", None)
+        pats = getattr(w, "patches", None) if w is not None else None
+        if not budget or not pats:
+            return orig(s, input, dtype, device, bias_dtype)
+        import comfy.model_management
+        import comfy.ops
+        if input is not None:  # ComfyUI-GGUF's own defaults
+            if dtype is None:
+                dtype = getattr(input, "dtype", torch.float32)
+            if bias_dtype is None:
+                bias_dtype = dtype
+            if device is None:
+                device = input.device
+        pk = _patch_key(pats)
+        if pk is None:
+            return orig(s, input, dtype, device, bias_dtype)
+        key = (id(w), w.data_ptr(), str(w.device), dtype, str(device), s.dequant_dtype, s.patch_dtype, pk)
+        hit = _cache["layers"].get(s)
+        if hit is not None and hit[0] == key:
+            bias = None
+            if s.bias is not None:  # as ComfyUI-GGUF computes it (no cache: small)
+                nb = comfy.model_management.device_supports_non_blocking(device)
+                bias = s.get_weight(s.bias.to(device), dtype)
+                bias = comfy.ops.cast_to(bias, bias_dtype, device, non_blocking=nb, copy=False)
+            _state["stats"]["cache_hit"] = _state["stats"].get("cache_hit", 0) + 1
+            return hit[1], bias
+        weight, bias = orig(s, input, dtype, device, bias_dtype)
+        if hit is not None:
+            _cache["bytes"] -= hit[1].numel() * hit[1].element_size()
+            del _cache["layers"][s]
+        size = weight.numel() * weight.element_size()
+        if weight.is_cuda and _cache["bytes"] + size <= budget:
+            _hook_comfy_memory()
+            _cache["layers"][s] = (key, weight)
+            _cache["bytes"] += size
+            _state["stats"]["cache_store"] = _state["stats"].get("cache_store", 0) + 1
+        return weight, bias
+    cast_bias_weight._weightferry = True
+    return cast_bias_weight
+
+
 def _patched(orig):
     def dequantize_tensor(tensor, dtype=None, dequant_dtype=None):
         qtype = getattr(tensor, "tensor_type", None)
@@ -324,12 +430,20 @@ def install(force=False):
     if _LORA and layer is not None and not getattr(layer.get_weight, "_weightferry", False):
         _state["orig_gw"] = layer.get_weight
         layer.get_weight = _patched_get_weight(layer.get_weight)
+    if layer is not None and not getattr(layer.cast_bias_weight, "_weightferry", False):
+        # the LoRA weight cache (WEIGHTFERRY_GGUF_LORA_CACHE_MB, off at 0): costs one budget check per call when off
+        _state["orig_cbw"] = layer.cast_bias_weight
+        layer.cast_bias_weight = _patched_cast_bias_weight(layer.cast_bias_weight)
     log_info("GGUF Triton dequant: ComfyUI-GGUF's Q4_0 / Q4_1 / Q5_0 / Q5_1 / Q8_0 dequantisation in one kernel "
              "(WEIGHTFERRY_GGUF_TRITON).")
     return True
 
 
 def uninstall():
+    clear_cache()
+    if _state["ops"] is not None and _state.get("orig_cbw") is not None:
+        _state["ops"].GGMLLayer.cast_bias_weight = _state["orig_cbw"]
+        _state["orig_cbw"] = None
     if _state["ops"] is not None and _state.get("orig_gw") is not None:
         _state["ops"].GGMLLayer.get_weight = _state["orig_gw"]
         _state["orig_gw"] = None
