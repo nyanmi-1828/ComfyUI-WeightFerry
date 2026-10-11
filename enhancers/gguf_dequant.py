@@ -411,6 +411,12 @@ def _factor_mode():
         return _FACTORS
     from ..core import env as _env
     mode = (_env.get("WEIGHTFERRY_GGUF_LORA_FACTORS") or "pin").strip().lower()
+    try:  # ComfyUI started with --disable-pinned-memory: no pinned RAM here either
+        from comfy.cli_args import args
+        if getattr(args, "disable_pinned_memory", False):
+            return "0"
+    except Exception:  # noqa: BLE001
+        pass
     return mode if mode == "pin" else "0"
 
 
