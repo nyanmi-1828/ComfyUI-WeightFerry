@@ -88,6 +88,14 @@ try:
 except Exception as e:  # noqa: BLE001 -- at import: never stop ComfyUI from loading the nodes
     log_warn(f"Anima fused block not installed: {e}")
 
+# (C2) ComfyUI-GGUF's legacy-quant dequantisation in one Triton kernel, bit-exact (WEIGHTFERRY_GGUF_TRITON=0 turns it
+# off). ComfyUI loads custom nodes in name order, so ComfyUI-GGUF is already imported here
+try:
+    from .enhancers import gguf_dequant as _gguf_dequant
+    _gguf_dequant.install()
+except Exception as e:  # noqa: BLE001 -- at import: never stop ComfyUI from loading the nodes
+    log_warn(f"GGUF Triton dequant not installed: {e}")
+
 
 
 # =========================================================================
