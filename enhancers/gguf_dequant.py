@@ -429,9 +429,25 @@ def _factor(t, dev, mode):
         held = hit[2]
     else:
         held = t.pin_memory()
+        _hook_comfy_memory()
         # keyed by id (a WeakKeyDictionary would compare tensors with ==); the entry goes when the factor does
-        store[id(t)] = (weakref.ref(t, lambda _r, i=id(t), s=store: s.pop(i, None)), key, held)
+        store[id(t)] = (weakref.ref(t, lambda _r, i=id(t): _pin_dropped(i)), key, held)
     return held.to(dev, non_blocking=True).to(torch.float32)
+
+
+def _pin_dropped(i):
+    """A LoRA factor is gone: drop its pinned copy. PyTorch keeps freed pinned blocks for reuse; the next time
+    ComfyUI frees memory or unloads models they are returned to the system (_hook_comfy_memory)."""
+    if _factors.pop(i, None) is not None:
+        _cache["pin_freed"] = True
+
+
+def _release_pinned():
+    if _cache.get("pin_freed"):
+        _cache["pin_freed"] = False
+        empty = getattr(torch._C, "_host_emptyCache", None)
+        if empty is not None:
+            empty()
 
 
 def _patched_get_weight(orig):
@@ -484,7 +500,8 @@ def clear_cache():
 
 
 def _hook_comfy_memory():
-    """Clear the cache whenever ComfyUI frees memory or unloads models, so it never holds VRAM ComfyUI wants."""
+    """Clear the cache whenever ComfyUI frees memory or unloads models, so it never holds VRAM ComfyUI wants; and
+    return the pinned RAM of LoRA factors that are gone (_pin_dropped)."""
     if _cache["hooked"]:
         return
     import comfy.model_management as mm
@@ -496,6 +513,7 @@ def _hook_comfy_memory():
         def wrapped(*a, _fn=fn, **k):
             if _cache["bytes"]:
                 clear_cache()
+            _release_pinned()
             return _fn(*a, **k)
         wrapped._weightferry_cache = True
         setattr(mm, name, wrapped)
