@@ -71,6 +71,7 @@ from .fused_int8 import (  # noqa: F401 -- the int8 linear path; every name stay
 
 PARTS = ("mod", "qkv", "nhd", "modq", "gelu", "rms", "res", "ln", "tay", "smk")
 DEFAULT_PARTS = PARTS  # every part (smk on by default since 2026-10-11, the user's decision)
+_DEFER_QNORM = True  # smk: the cross-attention's q norm inside the query quantiser (module constant for benchmarks)
 _TRITON_PARTS = ("mod", "modq", "gelu", "rms", "ln", "tay", "smk")
 
 
@@ -214,6 +215,49 @@ def taylor_predict_add(hidden, sections, factor_sets, dts):
     return out
 
 
+def _deferred_rms(mod):
+    """forward of the cross-attention's q_norm when its output goes straight into SageAttention (smk): the input is
+    returned unchanged and the normalisation left pending (_tls.qnorm) for the query quantiser, which applies it on
+    the fly (enhancers/sage_fused.py); any other consumer gets it materialised first (_qnorm_real). A weight that
+    ComfyUI casts or patches per call (Dynamic VRAM casts every call) is copied inside the cast (128 values): the
+    cast buffer may be reused after it."""
+    import comfy.ops
+    plain = _rms_forward(mod)
+
+    def forward(x):
+        if (tuple(mod.normalized_shape) != (128,) or mod.eps is None or x.dtype != torch.bfloat16 or not x.is_cuda
+                or not x.is_contiguous()):
+            return plain(x)
+        comfy.ops.run_every_op()
+        if mod.comfy_cast_weights or len(mod.weight_function) > 0 or len(mod.bias_function) > 0:
+            with comfy.ops.CastBiasWeightContext(mod if mod.weight is not None else None, x,
+                                                 offloadable=True) as (weight, _bias):
+                w = None if weight is None else weight.clone()
+        else:
+            w = mod.weight
+        if w is None or w.dtype != torch.bfloat16 or tuple(w.shape) != (128,) or w.device != x.device:
+            _count("qnorm", False, f"weight {None if w is None else (w.dtype, tuple(w.shape))}")
+            return plain(x)
+        _tls.qnorm = {"key": (x.data_ptr(), tuple(x.shape), tuple(x.stride())), "w": w.contiguous(),
+                      "eps": float(mod.eps)}
+        return x
+    return forward
+
+
+def _qnorm_match(q, pend):
+    return (pend is not None and torch.is_tensor(q)
+            and pend["key"] == (q.data_ptr(), tuple(q.shape), tuple(q.stride())))
+
+
+def _qnorm_real(q, pend):
+    """q with a pending RMSNorm (_deferred_rms) applied: the rms128 kernel's output, as without the deferral."""
+    if not _qnorm_match(q, pend):
+        return q
+    _count("rms", True)
+    _count("qnorm", False, "materialised for another consumer")
+    return rms_norm_128(q, pend["w"], pend["eps"])
+
+
 def _rms_ok(self):
     return ("rms" in _state["parts"] and type(self.q_norm).__name__ == "RMSNorm"
             and "forward" not in self.q_norm.__dict__)
@@ -223,8 +267,11 @@ def _compute_qkv(self, x, context=None, rope_emb=None, transformer_options={}):
     orig = _state["orig"]["compute_qkv"]
     if (context is not None and not getattr(self, "is_selfattn", False) and "rms" in _state["parts"]
             and "attn2_patch" not in transformer_options.get("patches", {}) and _rms_ok(self)):
-        # cross-attention: its q normalisation (rows of 128, no RoPE) by the Triton kernel
-        self.q_norm.forward = _rms_forward(self.q_norm)
+        # cross-attention: its q normalisation (rows of 128, no RoPE) by the Triton kernel, or with smk left to
+        # SageAttention's query quantiser
+        _tls.qnorm = None
+        defer = _DEFER_QNORM and "smk" in _state["parts"] and "nhd" in _state["parts"]  # read by _compute_attention
+        self.q_norm.forward = (_deferred_rms if defer else _rms_forward)(self.q_norm)
         try:
             return orig(self, x, context, rope_emb=rope_emb, transformer_options=transformer_options)
         finally:
@@ -258,29 +305,32 @@ def _compute_attention(self, q, k, v, transformer_options={}):
     import comfy.ldm.cosmos.predict2 as p2
     from comfy.ldm.modules.attention import AttentionTensorContainer
     orig = _state["orig"]["compute_attention"]
+    pend = getattr(_tls, "qnorm", None)  # the cross-attention's pending q normalisation (_deferred_rms), if any
+    _tls.qnorm = None
     fn = p2.optimized_attention
     used = _attention_used(self, fn)
     if not _is_sage(self, used, p2):
         _count("nhd", False, f"attention {getattr(used, '__name__', used)}")
-        return orig(self, q, k, v, transformer_options=transformer_options)
+        return orig(self, _qnorm_real(q, pend), k, v, transformer_options=transformer_options)
     qt, kt, vt = (t.peek() if isinstance(t, AttentionTensorContainer) else t for t in (q, k, v))
     if (qt.dim() != 4 or kt.dim() != 4 or not (qt.is_contiguous() and kt.is_contiguous() and vt.is_contiguous())
             or qt.dtype not in (torch.bfloat16, torch.float16)):
         _count("nhd", False, f"q {tuple(qt.shape)} contiguous={qt.is_contiguous()} {qt.dtype}")
-        return orig(self, q, k, v, transformer_options=transformer_options)
+        return orig(self, _qnorm_real(q, pend), k, v, transformer_options=transformer_options)
     _count("nhd", True)
     qt, kt, vt = (t.take() if isinstance(t, AttentionTensorContainer) else t for t in (q, k, v))
     b, s, h, d = qt.shape
-    if "smk" in _state["parts"]:  # the key smoothing inside the key quantiser (enhancers/sage_fused.py)
-        out = _sage_smooth_k(qt, kt, vt, transformer_options)
+    if "smk" in _state["parts"]:  # SageAttention's K / V (and a pending q norm) preparation (enhancers/sage_fused.py)
+        out = _sage_smooth_k(qt, kt, vt, transformer_options, pend if _qnorm_match(qt, pend) else None)
         if out is not None:
             return self.output_dropout(self.output_proj(out.reshape(b, s, h * d)))
+    qt = _qnorm_real(qt, pend)
     out = fn(qt.view(b, s, h * d), kt.view(b, kt.shape[1], h * d), vt.view(b, vt.shape[1], h * d), h,
              skip_reshape=False, preferred_attention=self.comfy_attention, transformer_options=transformer_options)
     return self.output_dropout(self.output_proj(out))
 
 
-def _sage_smooth_k(q, k, v, transformer_options):
+def _sage_smooth_k(q, k, v, transformer_options, qnorm=None):
     """attention_sage's call on (batch, tokens, heads, dim) inputs with the key smoothing fused (smk); None when this
     call would not end in the sm89 kernel it reproduces (the caller then runs ComfyUI's)."""
     from . import sage_fused
@@ -292,11 +342,14 @@ def _sage_smooth_k(q, k, v, transformer_options):
         _count("smk", False, "not SageAttention's sm89 FP8 P*V path")
         return None
     try:
-        out = sage_fused.sage_nhd(q, k, v, pv)
+        out = sage_fused.sage_nhd(q, k, v, pv, None if qnorm is None else (qnorm["w"], qnorm["eps"]))
     except Exception as exc:  # noqa: BLE001 -- ComfyUI's call instead
         _count("smk", False, repr(exc)[:120])
         return None
     _count("smk", out is not None, None if out is not None else f"q {tuple(q.shape)} k {tuple(k.shape)}")
+    if out is not None and qnorm is not None:
+        _count("rms", True)
+        _count("qnorm", True)
     return out
 
 

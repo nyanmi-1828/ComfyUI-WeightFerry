@@ -110,8 +110,49 @@ def _get_kernel():
             q = (x * inv[None, :]).to(tl.float8e4nv)
             tl.store(obase + cs[None, :] * (H * P) + j[:, None], q, mask=j[:, None] < P)
 
+    @triton.jit
+    def _quant_query_rms(Input, W, Output, Scale, L, eps,
+                         stride_iz, stride_ih, stride_in, stride_oz, stride_oh, stride_on, stride_sz, stride_sh,
+                         C: tl.constexpr, BLK: tl.constexpr):
+        # SageAttention's quant_query_per_thread_int8_kernel on RMSNorm(q) computed here (the cross-attention's q
+        # normalisation, the fused block's rms128 order: 32 lanes x 4 consecutive squares ((a + b) + c) + d, an
+        # xor-shuffle sum 16 .. 1, rsqrt.approx(sum / 128 + eps), bf16((x * rstd) * w)) -- never written as bf16
+        R: tl.constexpr = BLK // 8
+        off_blk = tl.program_id(0) // 8
+        off_tld = tl.program_id(0) % 8
+        off_h = tl.program_id(1)
+        off_b = tl.program_id(2)
+        offs_n = off_blk * BLK + tl.arange(0, R) * 8 + off_tld
+        offs_k = tl.arange(0, C)
+        m = offs_n[:, None] < L
+        x = tl.load(Input + off_b * stride_iz + off_h * stride_ih + offs_n[:, None] * stride_in + offs_k[None, :],
+                    mask=m, other=0.0).to(tl.float32)
+        sq = tl.reshape(x * x, (R, 32, 2, 2))  # [row, lane, j1, j0], value 2 * j1 + j0 of the lane's 4
+        e0, e1 = tl.split(sq)
+        a, c = tl.split(e0)
+        b, d = tl.split(e1)
+        s = ((a + b) + c) + d
+        s = _half(s, R, 32)
+        s = _half(s, R, 16)
+        s = _half(s, R, 8)
+        s = _half(s, R, 4)
+        s = _half(s, R, 2)
+        tot = tl.reshape(s, (R,))
+        rstd = tl.inline_asm_elementwise("rsqrt.approx.f32 $0, $1;", "=r,r", [tot / 128.0 + eps], dtype=tl.float32,
+                                         is_pure=True, pack=1)
+        w = tl.load(W + offs_k).to(tl.float32)
+        y = tl.where(m, _r16((x * rstd[:, None]) * w[None, :]), 0.0)
+        scale = tl.max(tl.abs(y)) / 127. + 0.0000001
+        q = y / scale
+        q += 0.5 * tl.where(q >= 0, 1, -1)
+        q = q.to(tl.int8)
+        tl.store(Output + off_b * stride_oz + off_h * stride_oh + offs_n[:, None] * stride_on + offs_k[None, :], q,
+                 mask=m)
+        tl.store(Scale + off_b * stride_sz + off_h * stride_sh + off_blk * 8 + off_tld, scale)
+
     _kernel["k"] = _quant_key_smooth
     _kernel["v"] = _v_fp8
+    _kernel["q_rms"] = _quant_query_rms
     return _quant_key_smooth
 
 
@@ -130,6 +171,13 @@ def v_fp8_nhd(v, scale_max):
 
 
 if triton is not None:
+    @triton.jit
+    def _half(s, ROWS: tl.constexpr, N: tl.constexpr):
+        # one step of a warp xor-shuffle sum: lane t += lane t ^ (N / 2), kept for lanes t < N / 2
+        y = tl.permute(tl.reshape(s, (ROWS, 2, N // 2)), (0, 2, 1))
+        lo, hi = tl.split(y)
+        return lo + hi
+
     @triton.jit
     def _r16(x):
         u = x.to(tl.uint32, bitcast=True)
@@ -156,10 +204,11 @@ def available(q):
     return "fp32+fp32" if core.get_cuda_version() < (12, 8) else "fp32+fp16"
 
 
-def sage_nhd(q, k, v, pv_accum_dtype):
+def sage_nhd(q, k, v, pv_accum_dtype, q_norm=None):
     """sageattn_qk_int8_pv_fp8_cuda(q, k, v, tensor_layout="NHD", is_causal=False, sm_scale=None,
     pv_accum_dtype=pv_accum_dtype, smooth_k=True) for bf16 / fp16 (batch, tokens, heads, 64 or 128) inputs with the
-    key smoothing inside the key quantiser. None when the shapes are not that case."""
+    key smoothing inside the key quantiser. q_norm = (weight, eps): q is the input of an RMSNorm over its 128 values
+    (bf16 weight), applied by the query quantiser. None when the shapes are not that case."""
     import sageattention.core as core
     from sageattention.triton.quant_per_thread import quant_query_per_thread_int8_kernel
     b, qo_len, h_qo, head_dim = q.shape
@@ -176,10 +225,19 @@ def sage_nhd(q, k, v, pv_accum_dtype):
     k_scale = torch.empty((b, h_kv, (kv_len + BLKK - 1) // BLKK * (BLKK // WARPK) * 4), device=q.device,
                           dtype=torch.float32)
     grid = ((qo_len + BLKQ - 1) // BLKQ * (BLKQ // WARPQ) * 8, h_qo, b)
-    quant_query_per_thread_int8_kernel[grid](
-        q, q_int8, q_scale, qo_len, q.stride(0), q.stride(2), q.stride(1),
-        q_int8.stride(0), q_int8.stride(2), q_int8.stride(1), q_scale.stride(0), q_scale.stride(1),
-        C=head_dim, BLK=WARPQ)
+    if q_norm is not None:
+        if head_dim != 128 or q.dtype != torch.bfloat16:
+            return None
+        _get_kernel()
+        _kernel["q_rms"][grid](
+            q, q_norm[0], q_int8, q_scale, qo_len, float(q_norm[1]), q.stride(0), q.stride(2), q.stride(1),
+            q_int8.stride(0), q_int8.stride(2), q_int8.stride(1), q_scale.stride(0), q_scale.stride(1),
+            C=head_dim, BLK=WARPQ)
+    else:
+        quant_query_per_thread_int8_kernel[grid](
+            q, q_int8, q_scale, qo_len, q.stride(0), q.stride(2), q.stride(1),
+            q_int8.stride(0), q_int8.stride(2), q_int8.stride(1), q_scale.stride(0), q_scale.stride(1),
+            C=head_dim, BLK=WARPQ)
     grid = ((kv_len + BLKK - 1) // BLKK * (BLKK // WARPK) * 4, h_kv, b)
     _get_kernel()[grid](
         k, km, k_int8, k_scale, kv_len, k.stride(0), k.stride(2), k.stride(1), km.stride(0), km.stride(2),
