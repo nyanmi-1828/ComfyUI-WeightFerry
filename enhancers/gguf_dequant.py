@@ -553,8 +553,8 @@ def install(force=False):
     if _LORA and layer is not None and not getattr(layer.get_weight, "_weightferry", False):
         _state["orig_gw"] = layer.get_weight
         layer.get_weight = _patched_get_weight(layer.get_weight)
-    log_info("GGUF Triton dequant: ComfyUI-GGUF's Q4_0 / Q4_1 / Q5_0 / Q5_1 / Q8_0 dequantisation in one kernel "
-             "(WEIGHTFERRY_GGUF_TRITON).")
+    log_info("GGUF Triton dequant: ComfyUI-GGUF's Q4_0 / Q4_1 / Q5_0 / Q5_1 / Q8_0 "
+             + ("and Q2_K .. Q6_K " if _kquants() else "") + "dequantisation in one kernel (WEIGHTFERRY_GGUF_TRITON).")
     return True
 
 
