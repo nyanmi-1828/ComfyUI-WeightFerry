@@ -1,6 +1,6 @@
 # Environment variables (`WEIGHTFERRY_*`)
 
-ComfyUI-WeightFerry reads 60 `WEIGHTFERRY_*` environment variables. **Normal use needs none of them**: every default
+ComfyUI-WeightFerry reads 63 `WEIGHTFERRY_*` environment variables. **Normal use needs none of them**: every default
 is the behaviour that was measured and adopted, and the main options are node inputs. The variables are for tuning a
 default, switching on a low-VRAM / large-image mode, debugging / profiling / benchmarks, and turning off a fix or
 improvement that is on by default (for comparisons).
@@ -10,6 +10,18 @@ is also checked directly, to tell whether it was set). Most variables only affec
 streamed-LLM text encoder (the CLIP Text Encode (Streamed LLM) nodes), and `WEIGHTFERRY_TAYLOR_*` only the TaylorSeer
 node. Many tuning values only matter with `tiering` = Auto (RAM tier + SSD tier, what `auto_config` selects) or with
 chunk streaming.
+
+## Settings file
+
+Instead of environment variables (awkward with Comfy Desktop), the values can be written to
+`<ComfyUI user directory>/weightferry.env` (usually `ComfyUI/user/weightferry.env`), one `NAME=value` per line, `#`
+for comments. It is read once per process; a real environment variable still wins. `WEIGHTFERRY_SETTINGS_FILE` names
+another file, or `0` for none.
+
+```text
+# ComfyUI/user/weightferry.env
+WEIGHTFERRY_GGUF_LORA_CACHE_MB=3000
+```
 
 ## When a variable is read
 
@@ -39,12 +51,14 @@ token-row chunks with the residual stream in pinned RAM; "overflow" = VRAM spill
 
 ---
 
-## 1. Tuning / defaults in use (24)
+## 1. Tuning / defaults in use (26)
 
 The defaults are the measured settings. Change them only if you know why.
 
 | Variable | Default | Values | What it does | Notes |
 |---|---|---|---|---|
+| `WEIGHTFERRY_SETTINGS_FILE` | unset (= `<ComfyUI user directory>/weightferry.env`) | a path, or `0` = no settings file | Where the [settings file](#settings-file) is read from. | Read once, at the first variable read. |
+| `WEIGHTFERRY_GGUF_LORA_CACHE_MB` | `0` (off) | MB of VRAM | GGUF models with LoRA: keep each layer's weight with the LoRA applied (what ComfyUI-GGUF computes on every use: dequantise + LoRA) in VRAM up to this budget, and reuse it while the quantised weight and the patches are the same; the same bits. Cleared whenever ComfyUI frees memory or unloads models (so at least once per sampling run). Costs VRAM: up to the bf16 size of the patched layers. | Read per layer call (`enhancers/gguf_dequant.py`, needs `WEIGHTFERRY_GGUF_TRITON`). RTX 4060, Anima Q5_1 + the workflow LoRAs resident, 896×1472, CFG 5, runs of 4 steps (the first rebuilds the cache), latents identical: 3000 MB ×1.19, 5000 MB (all 896 patched layers) ×1.23, about the speed without LoRA. |
 | `WEIGHTFERRY_RAM_MARGIN_GB` | `6` | float, GB | RAM left free besides the RAM tier when the RAM tier is planned automatically (budget = available RAM − margin). | Read in `core/tiers/plan.py: plan_tiers`, `streaming/capture.py: _ram_tier_replan` and the on-load capture. Tiering Auto with automatic budget only. 6 GB = 4 GB kept free for the system + room for ComfyUI. |
 | `WEIGHTFERRY_TE_RESERVE_GB` | `3` | float, GB | Extra RAM kept free when an idle streamed text encoder's buffers were released for the DiT, so that encoder can capture again on its next encode. | Read in on-load capture (`streaming/load_steps.py: _capture_cache`). Measured without it: free RAM fell to 3.07 GB when the encoder captured again. |
 | `WEIGHTFERRY_TE_CACHE_GB` | `1` | float, GB | Size cap of the text-encode disk cache (CLIP Text Encode (Streamed LLM) with `disk_cache` on, folder `te_cache/` under `<ComfyUI base>/.cache/weightferry` or `WEIGHTFERRY_DISK_DIR`); the least recently used entries are deleted above it. | Read in `core/te_cache.py: store`. One entry is the conditioning of one prompt: 130 KB and 260 KB for the two prompts of the Anima draft example. |
@@ -123,7 +137,7 @@ Logging, tracing, profiling and overrides for benchmarks. Some add synchronizati
 | `WEIGHTFERRY_PREFETCH_PRIORITY` | unset (default stream priority) | int, lower = higher (RTX 4060: 0 … −3) | Priority of the weight-prefetch CUDA stream. | Read in `_prefetch_stream`. No difference (within noise); transfers are already hidden. |
 | `WEIGHTFERRY_SLOTS` | unset = node option `prefetch_slots` | int ≥ 2 | Overrides the number of GPU slots in block-streaming Double Buffer mode (and in the self-managed fit check). | Read in on-load capture. For benchmarks. |
 
-## 4. On by default: off-switches and alternatives (19)
+## 4. On by default: off-switches and alternatives (20)
 
 Improvements and fixes that are on by default; the listed value turns one off (for comparisons and as an escape
 hatch; `WEIGHTFERRY_SSD_LAYOUT` and `WEIGHTFERRY_USDU_UPSCALE_DTYPE` choose between alternatives). Most are a speed or
@@ -146,7 +160,6 @@ memory improvement rather than a correctness fix; the notes say which.
 | `WEIGHTFERRY_CHUNK_BLOCK0` | `1` | `0` | With chunk streaming and `resident_blocks` ≤ 1, block 0 streams too; `0` keeps it resident. | Read in `apply_streaming`. Improvement: Cosmos 14B's 375 MB block 0 was most of what overflowed at 2 GB. |
 | `WEIGHTFERRY_FUSED_BLOCK` | `1` (all parts) | `0` = ComfyUI's block, or a comma-separated list of parts: `mod`, `qkv`, `nhd`, `modq`, `gelu`, `rms`, `res`, `ln`, `tay`, `smk` | Cosmos-Predict2 / Anima DiT block with fused element-wise work, bit-exact with ComfyUI (`enhancers/fused_block.py`); the parts are listed [below](#fused-block-parts-weightferry_fused_block). | Read at import. One Anima block, int8 ConvRot: 32.6 → 26.8 ms; more measurements below. |
 | `WEIGHTFERRY_GGUF_TRITON` | `1` | `0` = ComfyUI-GGUF's own code | ComfyUI-GGUF's dequantisation of the legacy formats Q4_0 / Q4_1 / Q5_0 / Q5_1 / Q8_0 as one Triton kernel instead of its chain of PyTorch operations, with the same arithmetic and roundings (`enhancers/gguf_dequant.py`); K-quants and other formats keep ComfyUI-GGUF's code. Plain LoRA patches are applied in the same kernel after comfy's own `torch.mm` (the same bits). | Read at import (ComfyUI-GGUF must be loaded first, as ComfyUI's name order does). Bit-exact with ComfyUI-GGUF on every tensor of Anima Q8_0 / Q5_1 / Q4_1 and with the streaming node at 4 GB. RTX 4060, Anima resident 896×1472, CFG 5, alternating in one process, latents identical: Q5_1 2.37 → 1.67 s/it (×1.42), Q5_1 + LoRA ×1.31, Q4_1 ×1.19, Q8_0 ×1.03; the LoRA in the kernel too ×1.011 (Q5_1) / ×1.012 (Q8_0) / ×1.005 (Q4_1) more, every layer bit-exact. |
-| `WEIGHTFERRY_GGUF_LORA_CACHE_MB` | `0` (off) | MB of VRAM | GGUF models with LoRA: keep each layer's weight with the LoRA applied (what ComfyUI-GGUF computes on every use: dequantise + LoRA) in VRAM up to this budget, and reuse it while the quantised weight and the patches are the same; the same bits. Cleared whenever ComfyUI frees memory or unloads models (so at least once per sampling run). Costs VRAM: up to the bf16 size of the patched layers. | Read per layer call (`enhancers/gguf_dequant.py`, needs `WEIGHTFERRY_GGUF_TRITON`). RTX 4060, Anima Q5_1 + the workflow LoRAs resident, 896×1472, CFG 5, runs of 4 steps (the first rebuilds the cache), latents identical: 3000 MB ×1.19, 5000 MB (all 896 patched layers) ×1.23, about the speed without LoRA. |
 | `WEIGHTFERRY_GGUF_KEEP_MMAP` | `1` | `0` = ComfyUI-GGUF's RAM copy as before | GGUF models (ComfyUI-GGUF): the streamed weights stay memory-mapped from the .gguf file instead of ComfyUI-GGUF's private RAM copy, so the RAM goes to the pinned RAM tier. Layers that ComfyUI-GGUF's patcher put on the GPU before a capture get CPU copies for their SSD-tier blocks (that RAM is kept free) instead of disabling the SSD tier. | Read in `apply_streaming` and on-load capture. RTX 4060, 32 GB RAM, VRAM capped at 4 GB, Wan 2.1 14B Q8_0 (15.9 GB): without it RAM ran short (streamed without the switch: all blocks on the SSD, 4.99 s/it; ComfyUI-GGUF alone: 4.04 s/it); with it 2.35–2.56 s/it, bit-exact with ComfyUI-GGUF. Cosmos-Predict2 14B Q8_0 + LoRA 896×1472: 9.10 vs 10.06 s/it. |
 | `WEIGHTFERRY_ACT_H2D_STREAM` | `1` | `1`, `0` | Activation streaming with the residual stream in pinned RAM: the next row chunk is copied to the GPU on its own stream while the current one is computed (two buffers), instead of on the compute stream when needed. Values unchanged. `0`: copied on the compute stream when needed. | Read per block in `_row_chunks` (`streaming/activation.py`). Colab L4, one Cosmos 14B forward: 3.39 → 3.18 s (896×1472), 15.2 → 14.3 s (1792×2944), bit-exact. |
 | `WEIGHTFERRY_ACT_D2H_STREAM` | `1` | `1`, `0` | Activation streaming writes rows back to pinned RAM on a separate device-to-host stream. | Read in `_act_d2h_stream`. No speed-up at 896×1472 or 1792×2944 (20.67 vs 20.65 s); the write-back is already hidden. |
