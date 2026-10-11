@@ -32,6 +32,9 @@ changing a single bit of the result:
 * ``rms``: the cross-attention's q normalisation (RMSNorm over rows of 128) as a Triton kernel with PyTorch's order
   of operations (4 consecutive squares per thread, a warp xor-shuffle sum 16, 8, 4, 2, 1, rsqrt.approx, (x * rstd) *
   weight; verified bit-exact against PyTorch).
+* ``smk`` (2026-10-11): SageAttention's key smoothing (``k - mean(k)``, which sageattn() applies on
+  RTX 40 GPUs) inside its key quantiser, and V's per-channel fp8 in one kernel, instead of written copies
+  (enhancers/sage_fused.py; the same bits as sageattn).
 
 The int8 quantiser (modq / gelu / ln) is a Triton reproduction of comfy_kitchen's quantize_int8_rowwise_convrot64
 (compiled, no source): the 256-wide "regular" Hadamard kron(H4, H4, H4, H4) / 16 in float32 (radix-4 stages of
@@ -66,8 +69,9 @@ from .fused_int8 import (  # noqa: F401 -- the int8 linear path; every name stay
     _set_pre, _shared_forward,
 )
 
-PARTS = ("mod", "qkv", "nhd", "modq", "gelu", "rms", "res", "ln", "tay")
-_TRITON_PARTS = ("mod", "modq", "gelu", "rms", "ln", "tay")
+PARTS = ("mod", "qkv", "nhd", "modq", "gelu", "rms", "res", "ln", "tay", "smk")
+DEFAULT_PARTS = PARTS  # every part (smk on by default since 2026-10-11, the user's decision)
+_TRITON_PARTS = ("mod", "modq", "gelu", "rms", "ln", "tay", "smk")
 
 
 def stats(reset=False):
@@ -78,11 +82,14 @@ def stats(reset=False):
 
 
 def wanted_parts():
-    """WEIGHTFERRY_FUSED_BLOCK: 1 / unset = all parts (default), 0 = off, or a comma separated list of PARTS."""
+    """WEIGHTFERRY_FUSED_BLOCK: 1 / unset / all = every part (default), 0 = off, or a comma separated list of
+    PARTS."""
     v = (_env.get("WEIGHTFERRY_FUSED_BLOCK") or "1").strip().lower()
     if v in ("", "0", "off", "false"):
         return ()
-    if v in ("1", "on", "true", "all"):
+    if v in ("1", "on", "true"):
+        return DEFAULT_PARTS
+    if v == "all":
         return PARTS
     return tuple(p for p in (s.strip() for s in v.split(",")) if p in PARTS)
 
@@ -264,9 +271,33 @@ def _compute_attention(self, q, k, v, transformer_options={}):
     _count("nhd", True)
     qt, kt, vt = (t.take() if isinstance(t, AttentionTensorContainer) else t for t in (q, k, v))
     b, s, h, d = qt.shape
+    if "smk" in _state["parts"]:  # the key smoothing inside the key quantiser (enhancers/sage_fused.py)
+        out = _sage_smooth_k(qt, kt, vt, transformer_options)
+        if out is not None:
+            return self.output_dropout(self.output_proj(out.reshape(b, s, h * d)))
     out = fn(qt.view(b, s, h * d), kt.view(b, kt.shape[1], h * d), vt.view(b, vt.shape[1], h * d), h,
              skip_reshape=False, preferred_attention=self.comfy_attention, transformer_options=transformer_options)
     return self.output_dropout(self.output_proj(out))
+
+
+def _sage_smooth_k(q, k, v, transformer_options):
+    """attention_sage's call on (batch, tokens, heads, dim) inputs with the key smoothing fused (smk); None when this
+    call would not end in the sm89 kernel it reproduces (the caller then runs ComfyUI's)."""
+    from . import sage_fused
+    if "optimized_attention_override" in transformer_options:
+        _count("smk", False, "optimized_attention_override")
+        return None
+    pv = sage_fused.available(q)
+    if pv is None or not (k.is_contiguous() and v.is_contiguous()):
+        _count("smk", False, "not SageAttention's sm89 FP8 P*V path")
+        return None
+    try:
+        out = sage_fused.sage_nhd(q, k, v, pv)
+    except Exception as exc:  # noqa: BLE001 -- ComfyUI's call instead
+        _count("smk", False, repr(exc)[:120])
+        return None
+    _count("smk", out is not None, None if out is not None else f"q {tuple(q.shape)} k {tuple(k.shape)}")
+    return out
 
 
 # ---------------------------------------------------------------------------------------------------------- mlp

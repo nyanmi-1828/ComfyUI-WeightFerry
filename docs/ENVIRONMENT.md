@@ -144,7 +144,7 @@ memory improvement rather than a correctness fix; the notes say which.
 | `WEIGHTFERRY_QUANT_SELF` | `1` | `0` | Self-managed resident blocks also for scaled-fp8 weights; `0` falls back to ComfyUI-managed resident blocks. | Read in on-load capture. Improvement: 118 vs 135 ms per block (124 vs 195 ms with a LoRA), Cosmos 14B. |
 | `WEIGHTFERRY_SSD_LAYOUT` | `interleave` | `interleave`, `tail` | Which streaming blocks go to the SSD tier: spread evenly, or the last N (`tail`). | Read in `tiered_store.ssd_positions` and the capture cache key. With `tail` the SSD reads do not overlap compute. |
 | `WEIGHTFERRY_CHUNK_BLOCK0` | `1` | `0` | With chunk streaming and `resident_blocks` ≤ 1, block 0 streams too; `0` keeps it resident. | Read in `apply_streaming`. Improvement: Cosmos 14B's 375 MB block 0 was most of what overflowed at 2 GB. |
-| `WEIGHTFERRY_FUSED_BLOCK` | `1` (all parts) | `0` = ComfyUI's block, or a comma-separated list of parts: `mod`, `qkv`, `nhd`, `modq`, `gelu`, `rms`, `res`, `ln`, `tay` | Cosmos-Predict2 / Anima DiT block with fused element-wise work, bit-exact with ComfyUI (`enhancers/fused_block.py`); the parts are listed [below](#fused-block-parts-weightferry_fused_block). | Read at import. One Anima block, int8 ConvRot: 32.6 → 26.8 ms; more measurements below. |
+| `WEIGHTFERRY_FUSED_BLOCK` | `1` (all parts) | `0` = ComfyUI's block, or a comma-separated list of parts: `mod`, `qkv`, `nhd`, `modq`, `gelu`, `rms`, `res`, `ln`, `tay`, `smk` | Cosmos-Predict2 / Anima DiT block with fused element-wise work, bit-exact with ComfyUI (`enhancers/fused_block.py`); the parts are listed [below](#fused-block-parts-weightferry_fused_block). | Read at import. One Anima block, int8 ConvRot: 32.6 → 26.8 ms; more measurements below. |
 | `WEIGHTFERRY_GGUF_KEEP_MMAP` | `1` | `0` = ComfyUI-GGUF's RAM copy as before | GGUF models (ComfyUI-GGUF): the streamed weights stay memory-mapped from the .gguf file instead of ComfyUI-GGUF's private RAM copy, so the RAM goes to the pinned RAM tier. Layers that ComfyUI-GGUF's patcher put on the GPU before a capture get CPU copies for their SSD-tier blocks (that RAM is kept free) instead of disabling the SSD tier. | Read in `apply_streaming` and on-load capture. RTX 4060, 32 GB RAM, VRAM capped at 4 GB, Wan 2.1 14B Q8_0 (15.9 GB): without it RAM ran short (streamed without the switch: all blocks on the SSD, 4.99 s/it; ComfyUI-GGUF alone: 4.04 s/it); with it 2.35–2.56 s/it, bit-exact with ComfyUI-GGUF. Cosmos-Predict2 14B Q8_0 + LoRA 896×1472: 9.10 vs 10.06 s/it. |
 | `WEIGHTFERRY_ACT_H2D_STREAM` | `1` | `1`, `0` | Activation streaming with the residual stream in pinned RAM: the next row chunk is copied to the GPU on its own stream while the current one is computed (two buffers), instead of on the compute stream when needed. Values unchanged. `0`: copied on the compute stream when needed. | Read per block in `_row_chunks` (`streaming/activation.py`). Colab L4, one Cosmos 14B forward: 3.39 → 3.18 s (896×1472), 15.2 → 14.3 s (1792×2944), bit-exact. |
 | `WEIGHTFERRY_ACT_D2H_STREAM` | `1` | `1`, `0` | Activation streaming writes rows back to pinned RAM on a separate device-to-host stream. | Read in `_act_d2h_stream`. No speed-up at 896×1472 or 1792×2944 (20.67 vs 20.65 s); the write-back is already hidden. |
@@ -168,6 +168,16 @@ the other parts still apply.
 * `ln` (Triton): the LayerNorm inside the quantiser too (PyTorch's vectorized layer-norm kernel reproduced).
 * `tay` (Triton): TaylorSeer's Taylor prediction and its addition in one pass (same order and bf16 rounding);
   TaylorSeer's per-step decision input also uses the one-pass LayerNorm + scale-and-shift.
+* `smk` (Triton): SageAttention's preparation of K and V without intermediate copies
+  (`enhancers/sage_fused.py`). On RTX 40 GPUs `sageattn()` smooths the keys (`k - mean(k)`, written as a copy and
+  read back); here the key quantiser subtracts the mean itself. V's transposed / padded / permuted bf16 copy and its
+  per-channel fp8 quantisation become one kernel. Only when ComfyUI's call would end in SageAttention's sm89 FP8 P·V
+  kernel; otherwise ComfyUI's call. Same bits as `sageattn` (5 shapes, keys of 77 to 5152 tokens, an all-zero V
+  channel included).
+
+The int8 activation quantiser runs with 2 warps per row (1.5–2.2× faster than 8 at Anima's widths, the same bits) and
+also quantises the output projections' plain inputs (the same bits as comfy_kitchen's quantiser at every width
+256–8192).
 
 The package patches ComfyUI's `Block` / `Attention` / `GPT2FeedForward` classes at import; activation streaming's
 row-chunked block uses the same parts.
@@ -178,6 +188,9 @@ Measured on an RTX 4060 (every image byte-identical with and without the parts):
   `mod,qkv,nhd` alone −10%), scaled fp8 42.9 → 40.6 ms (−6%, `mod,nhd`).
 * A full txt2img workflow (int8, streaming node, `modq,gelu` included): 12.4 → 11.4 / 13.3 → 12.3 s per image.
 * 2× upscale without tiles at 4 GB (activation streaming): 50.4 → 45.8 s per image.
+* Resident Anima int8 (896×1472, plain sampler), 9 rounds of 4 steps alternating in one process, the latents
+  identical (2026-10-11): 1.0.0 → 2-warp quantiser ×1.060 (CFG 5) / ×1.057 (CFG 1); plain inputs too ×1.001 /
+  ×1.011 on top; `smk` ×1.026 / ×1.020 on top (keys ×1.013 / ×1.013, V ×1.013 / ×1.007).
 
 ---
 
