@@ -41,6 +41,9 @@ except Exception:  # noqa: BLE001
 
 _kernel = {}
 _FUSE_V = True  # V's fp8 in one kernel (module constant: scratch/verify/ab_resident.py compares with False)
+# warps of the query quantiser with RMSNorm + RoPE inside: 1 is 1.47x faster than 4 at Anima's self-attention, the
+# same bits (2026-10-11, scratch/verify/qrope_warps_bench.py)
+_QROPE_WARPS = 1
 
 
 def _get_kernel():
@@ -341,7 +344,7 @@ def sage_nhd(q, k, v, pv_accum_dtype, q_norm=None, q_rope=None):
         _kernel["q_rope"][grid](
             q, f, w, q_int8, q_scale, qo_len, float(eps), f.stride(1), f.stride(3), f.stride(4), f.stride(5),
             q.stride(0), q.stride(2), q.stride(1), q_int8.stride(0), q_int8.stride(2), q_int8.stride(1),
-            q_scale.stride(0), q_scale.stride(1), C=head_dim, BLK=WARPQ)
+            q_scale.stride(0), q_scale.stride(1), C=head_dim, BLK=WARPQ, num_warps=_QROPE_WARPS)
     elif q_norm is not None:
         if head_dim != 128 or q.dtype != torch.bfloat16:
             return None
