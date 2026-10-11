@@ -283,9 +283,16 @@ def _qnorm_match(q, pend):
 
 
 def _qnorm_real(q, pend):
-    """q with a pending RMSNorm (_deferred_rms) applied: the rms128 kernel's output, as without the deferral."""
-    if not _qnorm_match(q, pend):
+    """q with a pending RMSNorm (_deferred_rms) applied: the rms128 kernel's output, as without the deferral. q may
+    come in ComfyUI's AttentionTensorContainer (Attention.forward wraps q / k / v): the result is wrapped again. A
+    pending normalisation that does not belong to q is an error (q would go on unnormalised)."""
+    if pend is None:
         return q
+    from comfy.ldm.modules.attention import AttentionTensorContainer
+    if isinstance(q, AttentionTensorContainer):
+        return AttentionTensorContainer(_qnorm_real(q.take(), pend))
+    if not _qnorm_match(q, pend):
+        raise RuntimeError("WeightFerry fused block: a pending q normalisation does not match the attention's q")
     if pend.get("kind") == "rope":
         from . import sage_fused
         _count("qrope", False, "materialised for another consumer")
@@ -293,6 +300,13 @@ def _qnorm_real(q, pend):
     _count("rms", True)
     _count("qnorm", False, "materialised for another consumer")
     return rms_norm_128(q, pend["w"], pend["eps"])
+
+
+def _sage_next(attn):
+    """Whether this attention's compute_attention will take SageAttention (the only consumer that applies a pending q
+    normalisation on the fly; for any other the q normalisation is not deferred at all)."""
+    import comfy.ldm.cosmos.predict2 as p2
+    return _is_sage(attn, _attention_used(attn, p2.optimized_attention), p2)
 
 
 def _rms_ok(self):
@@ -307,7 +321,8 @@ def _compute_qkv(self, x, context=None, rope_emb=None, transformer_options={}):
         # cross-attention: its q normalisation (rows of 128, no RoPE) by the Triton kernel, or with smk left to
         # SageAttention's query quantiser
         _tls.qnorm = None
-        defer = _DEFER_QNORM and "smk" in _state["parts"] and "nhd" in _state["parts"]  # read by _compute_attention
+        defer = (_DEFER_QNORM and "smk" in _state["parts"] and "nhd" in _state["parts"]  # read by _compute_attention
+                 and _sage_next(self))
         self.q_norm.forward = (_deferred_rms if defer else _rms_forward)(self.q_norm)
         try:
             return orig(self, x, context, rope_emb=rope_emb, transformer_options=transformer_options)
@@ -321,7 +336,7 @@ def _compute_qkv(self, x, context=None, rope_emb=None, transformer_options={}):
         _count("qkv", False, "projections without _forward")
         return orig(self, x, context, rope_emb=rope_emb, transformer_options=transformer_options)
     if (_DEFER_QROPE and rope_emb is not None and "smk" in _state["parts"] and "nhd" in _state["parts"]
-            and triton is not None):
+            and triton is not None and _sage_next(self)):
         _tls.qnorm = None
         return _selfattn_qkv_rope(self, x, rope_emb, projs)
     with _Overrides(projs):
@@ -361,8 +376,10 @@ def _compute_attention(self, q, k, v, transformer_options={}):
     _count("nhd", True)
     qt, kt, vt = (t.take() if isinstance(t, AttentionTensorContainer) else t for t in (q, k, v))
     b, s, h, d = qt.shape
+    if pend is not None and not _qnorm_match(qt, pend):
+        raise RuntimeError("WeightFerry fused block: a pending q normalisation does not match the attention's q")
     if "smk" in _state["parts"]:  # SageAttention's K / V (and a pending q norm) preparation (enhancers/sage_fused.py)
-        out = _sage_smooth_k(qt, kt, vt, transformer_options, pend if _qnorm_match(qt, pend) else None)
+        out = _sage_smooth_k(qt, kt, vt, transformer_options, pend)
         if out is not None:
             return self.output_dropout(self.output_proj(out.reshape(b, s, h * d)))
     qt = _qnorm_real(qt, pend)
