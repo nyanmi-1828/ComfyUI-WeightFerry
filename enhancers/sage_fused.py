@@ -317,7 +317,7 @@ def rms_rope(x, f, w, eps):
 
 def sage_nhd(q, k, v, pv_accum_dtype, q_norm=None, q_rope=None):
     """sageattn_qk_int8_pv_fp8_cuda(q, k, v, tensor_layout="NHD", is_causal=False, sm_scale=None,
-    pv_accum_dtype=pv_accum_dtype, smooth_k=True) for bf16 / fp16 (batch, tokens, heads, 64 or 128) inputs with the
+    pv_accum_dtype=pv_accum_dtype, smooth_k=True) for bf16 (batch, tokens, heads, 64 or 128) inputs with the
     key smoothing inside the key quantiser. q_norm = (weight, eps): q is the input of an RMSNorm over its 128 values
     (bf16 weight), applied by the query quantiser; q_rope = (rotations, weight, eps): q is the input of comfy_kitchen's
     RMSNorm + split-half RoPE (rope_ok's case), applied by the query quantiser. None when the shapes are not that
@@ -327,6 +327,8 @@ def sage_nhd(q, k, v, pv_accum_dtype, q_norm=None, q_rope=None):
     b, qo_len, h_qo, head_dim = q.shape
     _, kv_len, h_kv, _ = k.shape
     if head_dim not in (64, 128) or h_qo != h_kv or k.shape[-1] != head_dim or v.shape != k.shape:
+        return None
+    if k.dtype != torch.bfloat16:  # the key quantiser rounds k - km to bfloat16 (_r16); float16 would round otherwise
         return None
     sm_scale = head_dim ** -0.5
     km = k.mean(dim=1, keepdim=True)  # as Sage: (b, 1, h, d) in the input dtype
