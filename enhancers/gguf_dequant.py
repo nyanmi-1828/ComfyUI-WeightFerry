@@ -321,7 +321,8 @@ def dequantize(data, qtype, oshape, mid_dtype, out_dtype):
     res = torch.empty(tuple(oshape), dtype=out, device=data.device)
     bb = 32
     _get_kernel()[(triton.cdiv(n_blocks, bb),)](raw, res, n_blocks, TS=ts, HAS_M=has_m, QH=qh, QS=qs, SUB=sub,
-                                                IS_Q8=is_q8, MID=_DT[mid], OUT=_DT[out], BB=bb, num_warps=4)
+                                                IS_Q8=is_q8, MID=_DT[mid], OUT=_DT[out], BB=bb, num_warps=4,
+                                                enable_fp_fusion=False)
     return res
 
 
@@ -399,7 +400,8 @@ def _add_loras(raw, res, loras, deq_first, fmt, mid):
         del mat1, mat2
         _kernel["add"][(triton.cdiv(n, BLOCK),)](
             raw, diff, res, n, float(sa), DEQ=(deq_first and i == 0), TS=ts, HAS_M=has_m, QH=qh, QS=qs, SUB=sub,
-            IS_Q8=is_q8, MID=_DT[mid], OUT=_DT[res.dtype], BLOCK=BLOCK, num_warps=4)
+            IS_Q8=is_q8, MID=_DT[mid], OUT=_DT[res.dtype], BLOCK=BLOCK, num_warps=4,
+            enable_fp_fusion=False)  # every product and sum rounded on its own (float32 layers too)
         del diff
     return res
 
