@@ -54,14 +54,17 @@ def _quantise_pre(pre, x_2d, x_q, x_s):
     """Fill x_q / x_s with kitchen's quantisation of the pending input's real value (the Triton reproduction)."""
     m, k = x_2d.shape
     quant_row = _get_kernels()["quant_row"]
+    # 2 warps per row: the same bits as 8 (the amax and the rotation do not depend on the thread layout, _ln_stats
+    # models its 128 threads in the tensor shapes), 1.5 - 2.2x faster on the RTX 4060 at Anima's widths 2048 / 8192
+    # (2026-10-11, scratch/verify/quant_row_bench.py)
     if pre["kind"] == "gelu":
-        quant_row[(m,)](x_2d, _gelu_table(x_2d.device), x_2d, x_q, x_s, 1, 0.0, K=k, PRE=PRE_GELU, num_warps=8)
+        quant_row[(m,)](x_2d, _gelu_table(x_2d.device), x_2d, x_q, x_s, 1, 0.0, K=k, PRE=PRE_GELU, num_warps=2)
     elif pre["kind"] == "lnmod":
         quant_row[(m,)](x_2d, pre["s1"], pre["shift"], x_q, x_s, pre["rows_per_group"], float(pre["norm"].eps), K=k,
-                        PRE=PRE_LNMOD, num_warps=8)
+                        PRE=PRE_LNMOD, num_warps=2)
     else:
         quant_row[(m,)](x_2d, pre["s1"], pre["shift"], x_q, x_s, pre["rows_per_group"], 0.0, K=k, PRE=PRE_MOD,
-                        num_warps=8)
+                        num_warps=2)
 
 
 _gelu_tables = {}
