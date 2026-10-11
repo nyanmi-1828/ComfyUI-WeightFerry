@@ -33,8 +33,9 @@ changing a single bit of the result:
   of operations (4 consecutive squares per thread, a warp xor-shuffle sum 16, 8, 4, 2, 1, rsqrt.approx, (x * rstd) *
   weight; verified bit-exact against PyTorch).
 * ``smk`` (2026-10-11): SageAttention's key smoothing (``k - mean(k)``, which sageattn() applies on
-  RTX 40 GPUs) inside its key quantiser, and V's per-channel fp8 in one kernel, instead of written copies
-  (enhancers/sage_fused.py; the same bits as sageattn).
+  RTX 40 GPUs) inside its key quantiser, V's per-channel fp8 in one kernel, and the queries' normalisation (the
+  cross-attention's RMSNorm, the self-attention's RMSNorm + RoPE as comfy_kitchen computes it) inside the query
+  quantiser, instead of written copies (enhancers/sage_fused.py; the same bits as kitchen + sageattn).
 
 The int8 quantiser (modq / gelu / ln) is a Triton reproduction of comfy_kitchen's quantize_int8_rowwise_convrot64
 (compiled, no source): the 256-wide "regular" Hadamard kron(H4, H4, H4, H4) / 16 in float32 (radix-4 stages of
@@ -72,6 +73,7 @@ from .fused_int8 import (  # noqa: F401 -- the int8 linear path; every name stay
 PARTS = ("mod", "qkv", "nhd", "modq", "gelu", "rms", "res", "ln", "tay", "smk")
 DEFAULT_PARTS = PARTS  # every part (smk on by default since 2026-10-11, the user's decision)
 _DEFER_QNORM = True  # smk: the cross-attention's q norm inside the query quantiser (module constant for benchmarks)
+_DEFER_QROPE = True  # smk: the self-attention's q norm + RoPE inside the query quantiser (module constant)
 _TRITON_PARTS = ("mod", "modq", "gelu", "rms", "ln", "tay", "smk")
 
 
@@ -244,6 +246,37 @@ def _deferred_rms(mod):
     return forward
 
 
+def _selfattn_qkv_rope(self, x, rope_emb, projs):
+    """ComfyUI's Attention.compute_qkv for a self-attention without patches, with the q / k RMSNorm + split-half RoPE
+    by the Suite's reproduction of comfy_kitchen's rms_rope_split_half (enhancers/sage_fused.py, the same bits): k is
+    written, q is left pending (_tls.qnorm, kind "rope") for SageAttention's query quantiser (smk), or materialised by
+    _qnorm_real for any other consumer. Shapes the reproduction does not cover take kitchen's call."""
+    import comfy.ops
+    import comfy.quant_ops
+    from . import sage_fused
+    with _Overrides(projs):
+        q = self.q_proj(x)
+        k = self.k_proj(x)
+        v = self.v_proj(x)
+    q, k, v = (t.view(*t.shape[:-1], self.n_heads, self.head_dim) for t in (q, k, v))
+    v = self.v_norm(v)
+    q_scale, _, q_os = comfy.ops.cast_bias_weight(self.q_norm, q, offloadable=True)
+    k_scale, _, k_os = comfy.ops.cast_bias_weight(self.k_norm, k, offloadable=True)
+    try:
+        if sage_fused.rope_ok(q, k, rope_emb, q_scale, k_scale):
+            k_out = sage_fused.rms_rope(k, rope_emb, k_scale, self.q_norm.eps)
+            _tls.qnorm = {"kind": "rope", "key": (q.data_ptr(), tuple(q.shape), tuple(q.stride())), "f": rope_emb,
+                          "w": q_scale.clone(), "eps": float(self.q_norm.eps)}
+            q_out = q
+        else:
+            _count("qrope", False, f"q {tuple(q.shape)} {q.dtype} rope {tuple(rope_emb.shape)} {rope_emb.dtype}")
+            q_out, k_out = comfy.quant_ops.ck.rms_rope_split_half(q, k, rope_emb, q_scale, k_scale, self.q_norm.eps)
+    finally:
+        comfy.ops.uncast_bias_weight(self.q_norm, q_scale, None, q_os)
+        comfy.ops.uncast_bias_weight(self.k_norm, k_scale, None, k_os)
+    return q_out, k_out, v
+
+
 def _qnorm_match(q, pend):
     return (pend is not None and torch.is_tensor(q)
             and pend["key"] == (q.data_ptr(), tuple(q.shape), tuple(q.stride())))
@@ -253,6 +286,10 @@ def _qnorm_real(q, pend):
     """q with a pending RMSNorm (_deferred_rms) applied: the rms128 kernel's output, as without the deferral."""
     if not _qnorm_match(q, pend):
         return q
+    if pend.get("kind") == "rope":
+        from . import sage_fused
+        _count("qrope", False, "materialised for another consumer")
+        return sage_fused.rms_rope(q, pend["f"], pend["w"], pend["eps"])
     _count("rms", True)
     _count("qnorm", False, "materialised for another consumer")
     return rms_norm_128(q, pend["w"], pend["eps"])
@@ -283,6 +320,10 @@ def _compute_qkv(self, x, context=None, rope_emb=None, transformer_options={}):
     if len(projs) != 3:
         _count("qkv", False, "projections without _forward")
         return orig(self, x, context, rope_emb=rope_emb, transformer_options=transformer_options)
+    if (_DEFER_QROPE and rope_emb is not None and "smk" in _state["parts"] and "nhd" in _state["parts"]
+            and triton is not None):
+        _tls.qnorm = None
+        return _selfattn_qkv_rope(self, x, rope_emb, projs)
     with _Overrides(projs):
         return orig(self, x, context, rope_emb=rope_emb, transformer_options=transformer_options)
 
@@ -342,14 +383,20 @@ def _sage_smooth_k(q, k, v, transformer_options, qnorm=None):
         _count("smk", False, "not SageAttention's sm89 FP8 P*V path")
         return None
     try:
-        out = sage_fused.sage_nhd(q, k, v, pv, None if qnorm is None else (qnorm["w"], qnorm["eps"]))
+        if qnorm is not None and qnorm.get("kind") == "rope":
+            out = sage_fused.sage_nhd(q, k, v, pv, q_rope=(qnorm["f"], qnorm["w"], qnorm["eps"]))
+        else:
+            out = sage_fused.sage_nhd(q, k, v, pv, None if qnorm is None else (qnorm["w"], qnorm["eps"]))
     except Exception as exc:  # noqa: BLE001 -- ComfyUI's call instead
         _count("smk", False, repr(exc)[:120])
         return None
     _count("smk", out is not None, None if out is not None else f"q {tuple(q.shape)} k {tuple(k.shape)}")
     if out is not None and qnorm is not None:
-        _count("rms", True)
-        _count("qnorm", True)
+        if qnorm.get("kind") == "rope":
+            _count("qrope", True)
+        else:
+            _count("rms", True)
+            _count("qnorm", True)
     return out
 
 

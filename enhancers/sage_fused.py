@@ -1,7 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2024 by SageAttention team; modifications Copyright (c) 2026 nyanmi-1828
 # Adapted from SageAttention 2.2.0 (thu-ml/SageAttention, Apache-2.0): sageattention/core.py
-# (sageattn_qk_int8_pv_fp8_cuda) and sageattention/triton/quant_per_thread.py (quant_key_per_thread_int8_kernel).
+# (sageattn_qk_int8_pv_fp8_cuda) and sageattention/triton/quant_per_thread.py (quant_key_per_thread_int8_kernel),
+# and from comfy-kitchen 0.2.36 (Comfy-Org/comfy-kitchen, commit 888b13e; Copyright (c) 2025 NVIDIA CORPORATION &
+# AFFILIATES, Apache-2.0): comfy_kitchen/backends/cuda/ops/rms_rope.cu and rope_device.cuh (rope_kernel's RMSNorm +
+# split-half RoPE, re-written in Triton).
 # Modified 2026-10-11: the key quantiser subtracts the key mean itself (smooth_k) instead of reading a k - mean copy;
 # V's per-channel fp8 (per_channel_fp8: transpose_pad_permute + scale_fuse_quant, compiled) reproduced as one Triton
 # kernel from its outputs; the call is limited to the path sageattn() takes on Ada (sm89) for (batch, tokens, heads,
@@ -150,9 +153,61 @@ def _get_kernel():
                  mask=m)
         tl.store(Scale + off_b * stride_sz + off_h * stride_sh + off_blk * 8 + off_tld, scale)
 
+    @triton.jit
+    def _rope_rows(X, F, W, Out, n_rows, H, L, eps, f_s1, f_s3, f_s4, f_s5, ROWS: tl.constexpr):
+        # comfy_kitchen's rms_rope_split_half for rows of 128 of a contiguous (batch, tokens, heads, 128) tensor,
+        # written as bf16 (the keys; the queries when another consumer needs them)
+        r = tl.program_id(0) * ROWS + tl.arange(0, ROWS)
+        m = r < n_rows
+        tok = (r // H) % L
+        cols = tl.arange(0, 128)
+        offs = r[:, None].to(tl.int64) * 128 + cols[None, :]
+        x = tl.load(X + offs, mask=m[:, None], other=0.0).to(tl.float32)
+        fb = F + tok[:, None].to(tl.int64) * f_s1 + tl.arange(0, 64)[None, :] * f_s3
+        f00 = tl.load(fb, mask=m[:, None], other=0.0)
+        f01 = tl.load(fb + f_s5, mask=m[:, None], other=0.0)
+        f10 = tl.load(fb + f_s4, mask=m[:, None], other=0.0)
+        f11 = tl.load(fb + f_s4 + f_s5, mask=m[:, None], other=0.0)
+        w = tl.load(W + cols).to(tl.float32)
+        y = _rms_rope128(x, w, f00, f01, f10, f11, eps, ROWS)
+        tl.store(Out + offs, y.to(tl.bfloat16), mask=m[:, None])
+
+    @triton.jit
+    def _quant_query_rope(Input, F, W, Output, Scale, L, eps, f_s1, f_s3, f_s4, f_s5,
+                          stride_iz, stride_ih, stride_in, stride_oz, stride_oh, stride_on, stride_sz, stride_sh,
+                          C: tl.constexpr, BLK: tl.constexpr):
+        # SageAttention's quant_query_per_thread_int8_kernel on the self-attention's q after comfy_kitchen's RMSNorm
+        # + split-half RoPE computed here -- the rotated q is never written as bf16
+        R: tl.constexpr = BLK // 8
+        off_blk = tl.program_id(0) // 8
+        off_tld = tl.program_id(0) % 8
+        off_h = tl.program_id(1)
+        off_b = tl.program_id(2)
+        offs_n = off_blk * BLK + tl.arange(0, R) * 8 + off_tld
+        offs_k = tl.arange(0, C)
+        m = offs_n[:, None] < L
+        x = tl.load(Input + off_b * stride_iz + off_h * stride_ih + offs_n[:, None] * stride_in + offs_k[None, :],
+                    mask=m, other=0.0).to(tl.float32)
+        fb = F + offs_n[:, None].to(tl.int64) * f_s1 + tl.arange(0, 64)[None, :] * f_s3
+        f00 = tl.load(fb, mask=m, other=0.0)
+        f01 = tl.load(fb + f_s5, mask=m, other=0.0)
+        f10 = tl.load(fb + f_s4, mask=m, other=0.0)
+        f11 = tl.load(fb + f_s4 + f_s5, mask=m, other=0.0)
+        w = tl.load(W + offs_k).to(tl.float32)
+        y = tl.where(m, _rms_rope128(x, w, f00, f01, f10, f11, eps, R), 0.0)
+        scale = tl.max(tl.abs(y)) / 127. + 0.0000001
+        q = y / scale
+        q += 0.5 * tl.where(q >= 0, 1, -1)
+        q = q.to(tl.int8)
+        tl.store(Output + off_b * stride_oz + off_h * stride_oh + offs_n[:, None] * stride_on + offs_k[None, :], q,
+                 mask=m)
+        tl.store(Scale + off_b * stride_sz + off_h * stride_sh + off_blk * 8 + off_tld, scale)
+
     _kernel["k"] = _quant_key_smooth
     _kernel["v"] = _v_fp8
     _kernel["q_rms"] = _quant_query_rms
+    _kernel["rope_rows"] = _rope_rows
+    _kernel["q_rope"] = _quant_query_rope
     return _quant_key_smooth
 
 
@@ -177,6 +232,34 @@ if triton is not None:
         y = tl.permute(tl.reshape(s, (ROWS, 2, N // 2)), (0, 2, 1))
         lo, hi = tl.split(y)
         return lo + hi
+
+    @triton.jit
+    def _rms_rope128(x, w, f00, f01, f10, f11, eps, R: tl.constexpr):
+        # comfy_kitchen's rope_kernel<bf16, float, ..., HasRms, SplitHalf, ContigHead> for R rows of 128: lane t of
+        # 32 sums the squares of values t, t + 32, t + 64, t + 96 with fmaf from 0, __shfl_down 16 .. 1,
+        # rrms = rsqrtf(sum / 128 + eps), bf16((x * rrms) * w), then the split-half rotation of the pairs
+        # (d, d + 64) as nvcc contracts it: y0 = fma(f00, x0, f01 * x1), y1 = fma(f10, x0, f11 * x1), rounded to bf16
+        xs = tl.reshape(tl.permute(tl.reshape(x, (R, 4, 32)), (0, 2, 1)), (R, 32, 2, 2))  # [row, lane, j1, j0]
+        e0, e1 = tl.split(xs)
+        v0, v2 = tl.split(e0)
+        v1, v3 = tl.split(e1)
+        acc = v0 * v0
+        acc = tl.math.fma(v1, v1, acc)
+        acc = tl.math.fma(v2, v2, acc)
+        acc = tl.math.fma(v3, v3, acc)
+        acc = _half(acc, R, 32)
+        acc = _half(acc, R, 16)
+        acc = _half(acc, R, 8)
+        acc = _half(acc, R, 4)
+        acc = _half(acc, R, 2)
+        tot = tl.reshape(acc, (R,))
+        rr = tl.inline_asm_elementwise("rsqrt.approx.f32 $0, $1;", "=r,r", [tot / 128.0 + eps], dtype=tl.float32,
+                                       is_pure=True, pack=1)
+        n = _r16((x * rr[:, None]) * w[None, :])
+        lo, hi = tl.split(tl.permute(tl.reshape(n, (R, 2, 64)), (0, 2, 1)))  # dims d and d + 64
+        y0 = tl.math.fma(f00, lo, f01 * hi)
+        y1 = tl.math.fma(f10, lo, f11 * hi)
+        return _r16(tl.reshape(tl.permute(tl.join(y0, y1), (0, 2, 1)), (R, 128)))
 
     @triton.jit
     def _r16(x):
@@ -204,11 +287,38 @@ def available(q):
     return "fp32+fp32" if core.get_cuda_version() < (12, 8) else "fp32+fp16"
 
 
-def sage_nhd(q, k, v, pv_accum_dtype, q_norm=None):
+def rope_ok(q, k, f, q_scale, k_scale):
+    """The case the Triton reproduction of comfy_kitchen's rms_rope_split_half covers: contiguous bf16
+    (batch, tokens, heads, 128) q and k of the same shape, float32 rotations (1, tokens, 1, 64, 2, 2), scales of 128."""
+    if triton is None or f is None:
+        return False
+    b, L, h, d = q.shape if q.dim() == 4 else (0, 0, 0, 0)
+    return (d == 128 and q.dtype == torch.bfloat16 and k.dtype == torch.bfloat16 and k.shape == q.shape
+            and q.is_contiguous() and k.is_contiguous() and q.is_cuda and f.dtype == torch.float32 and f.dim() == 6
+            and tuple(f.shape) == (1, L, 1, 64, 2, 2) and f.device == q.device
+            and all(s is not None and s.dim() == 1 and s.shape[0] == 128 and s.is_contiguous() and s.device == q.device
+                    and s.dtype in (torch.bfloat16, torch.float16, torch.float32) for s in (q_scale, k_scale)))
+
+
+def rms_rope(x, f, w, eps):
+    """comfy_kitchen's rms_rope_split_half for one of q / k (rope_ok's case): the same bits, bf16 out."""
+    _get_kernel()
+    b, L, h, d = x.shape
+    out = torch.empty_like(x)
+    n = b * L * h
+    rows = 32
+    _kernel["rope_rows"][(triton.cdiv(n, rows),)](x, f, w, out, n, h, L, float(eps), f.stride(1), f.stride(3),
+                                                  f.stride(4), f.stride(5), ROWS=rows, num_warps=4)
+    return out
+
+
+def sage_nhd(q, k, v, pv_accum_dtype, q_norm=None, q_rope=None):
     """sageattn_qk_int8_pv_fp8_cuda(q, k, v, tensor_layout="NHD", is_causal=False, sm_scale=None,
     pv_accum_dtype=pv_accum_dtype, smooth_k=True) for bf16 / fp16 (batch, tokens, heads, 64 or 128) inputs with the
     key smoothing inside the key quantiser. q_norm = (weight, eps): q is the input of an RMSNorm over its 128 values
-    (bf16 weight), applied by the query quantiser. None when the shapes are not that case."""
+    (bf16 weight), applied by the query quantiser; q_rope = (rotations, weight, eps): q is the input of comfy_kitchen's
+    RMSNorm + split-half RoPE (rope_ok's case), applied by the query quantiser. None when the shapes are not that
+    case."""
     import sageattention.core as core
     from sageattention.triton.quant_per_thread import quant_query_per_thread_int8_kernel
     b, qo_len, h_qo, head_dim = q.shape
@@ -225,7 +335,14 @@ def sage_nhd(q, k, v, pv_accum_dtype, q_norm=None):
     k_scale = torch.empty((b, h_kv, (kv_len + BLKK - 1) // BLKK * (BLKK // WARPK) * 4), device=q.device,
                           dtype=torch.float32)
     grid = ((qo_len + BLKQ - 1) // BLKQ * (BLKQ // WARPQ) * 8, h_qo, b)
-    if q_norm is not None:
+    if q_rope is not None:
+        f, w, eps = q_rope
+        _get_kernel()
+        _kernel["q_rope"][grid](
+            q, f, w, q_int8, q_scale, qo_len, float(eps), f.stride(1), f.stride(3), f.stride(4), f.stride(5),
+            q.stride(0), q.stride(2), q.stride(1), q_int8.stride(0), q_int8.stride(2), q_int8.stride(1),
+            q_scale.stride(0), q_scale.stride(1), C=head_dim, BLK=WARPQ)
+    elif q_norm is not None:
         if head_dim != 128 or q.dtype != torch.bfloat16:
             return None
         _get_kernel()

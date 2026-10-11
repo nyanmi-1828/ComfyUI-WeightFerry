@@ -168,12 +168,14 @@ the other parts still apply.
 * `ln` (Triton): the LayerNorm inside the quantiser too (PyTorch's vectorized layer-norm kernel reproduced).
 * `tay` (Triton): TaylorSeer's Taylor prediction and its addition in one pass (same order and bf16 rounding);
   TaylorSeer's per-step decision input also uses the one-pass LayerNorm + scale-and-shift.
-* `smk` (Triton): SageAttention's preparation of K and V without intermediate copies
+* `smk` (Triton): SageAttention's preparation of Q, K and V without intermediate copies
   (`enhancers/sage_fused.py`). On RTX 40 GPUs `sageattn()` smooths the keys (`k - mean(k)`, written as a copy and
   read back); here the key quantiser subtracts the mean itself. V's transposed / padded / permuted bf16 copy and its
-  per-channel fp8 quantisation become one kernel. Only when ComfyUI's call would end in SageAttention's sm89 FP8 P·V
-  kernel; otherwise ComfyUI's call. Same bits as `sageattn` (5 shapes, keys of 77 to 5152 tokens, an all-zero V
-  channel included).
+  per-channel fp8 quantisation become one kernel. The queries' normalisation is done inside the query quantiser:
+  the cross-attention's RMSNorm, and the self-attention's RMSNorm + RoPE (comfy_kitchen's `rms_rope_split_half`
+  reproduced in Triton from its source; the keys are written by the same reproduction). Only when ComfyUI's call
+  would end in SageAttention's sm89 FP8 P·V kernel; otherwise ComfyUI's call (a pending query is normalised first).
+  Same bits as kitchen + `sageattn` (5 shapes, keys of 77 to 5152 tokens, an all-zero V channel included).
 
 The int8 activation quantiser runs with 2 warps per row (1.5–2.2× faster than 8 at Anima's widths, the same bits) and
 also quantises the output projections' plain inputs (the same bits as comfy_kitchen's quantiser at every width
@@ -190,7 +192,9 @@ Measured on an RTX 4060 (every image byte-identical with and without the parts):
 * 2× upscale without tiles at 4 GB (activation streaming): 50.4 → 45.8 s per image.
 * Resident Anima int8 (896×1472, plain sampler), 9 rounds of 4 steps alternating in one process, the latents
   identical (2026-10-11): 1.0.0 → 2-warp quantiser ×1.060 (CFG 5) / ×1.057 (CFG 1); plain inputs too ×1.001 /
-  ×1.011 on top; `smk` ×1.026 / ×1.020 on top (keys ×1.013 / ×1.013, V ×1.013 / ×1.007).
+  ×1.011 on top; `smk` ×1.026 / ×1.020 on top (keys ×1.013 / ×1.013, V ×1.013 / ×1.007); the queries'
+  normalisation inside the quantiser ×1.018 / ×1.015 (cross-attention) and ×1.014 / ×1.009 (self-attention RoPE)
+  more, within the run-to-run spread for the last.
 
 ---
 
