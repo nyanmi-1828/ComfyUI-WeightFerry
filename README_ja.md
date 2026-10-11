@@ -189,7 +189,11 @@ VRAM が足りないとき（大きい画像、小さい GPU）に、Wan 2.1 の
 | Qwen2.5-VL 7B のテキストエンコーダー、streamed LLM のエンジン（エンジン単体） | 約 1.7〜1.9 倍速い、VRAM +2.0GB | 同じトークンでの ComfyUI 自身のテキストエンコーダーのコード | ビット一致 |
 | RAM が少ない: RAM の予算 2GB で SSD 層 | RAM だけのときの 0.91 倍の速さ、ページ固定のメモリは 660MB 少ない | 全ブロックを RAM | ビット一致 |
 | Anima のタイルなし 2 倍拡大、GPU 4GB / 2GB | 1 枚 61.0 / 74.3 秒（`auto_config` のまま、手での設定なし） | 同じワークフローを上限なしで: 51.5 秒 | 上限なしと LPIPS 約 0.008（見た目は同じ） |
-| Anima のブロックの融合（int8 ConvRot、CFG 5） | 1 ブロック 26.8 ms | ComfyUI のブロック: 32.6 ms（時間が 18% 短い、約 1.22 倍） | ビット一致 |
+| Anima のブロックの融合（int8 ConvRot、CFG 5） | 1 ブロック 22.1 ms | ComfyUI のブロック: 30.3 ms（1.37 倍。交互に計測した中央値） | ビット一致 |
+| Anima の GGUF Q5_1（ComfyUI-GGUF）、モデルが収まる | 1 本のカーネルでの展開で 1.67 s/it | ComfyUI-GGUF の展開: 2.37 s/it（1.42 倍。Q4_1 は 1.19 倍、Q8_0 は 1.03 倍） | ビット一致 |
+| Anima の GGUF Q5_1 + LoRA、モデルが収まる / 上限 4GB（どちらも 1 本のカーネルでの展開） | LoRA の係数を固定 RAM から送って 1.68 / 0.97 s/it | 係数を通常の RAM から送る（ComfyUI-GGUF の置き方のまま）: 1.89 / 1.18 s/it（1.12 倍 / 1.22 倍） | ビット一致 |
+| Wan 2.1 14B の GGUF Q4_K_M、上限 4GB | K-quant のカーネルで 1.91 s/it | ComfyUI-GGUF の K-quant の展開: 2.81 s/it（1.47 倍。同じプロセスで交互に計測） | ビット一致 |
+| Anima 1792x2944 をトークンの行ごとに計算（タイルなしの 2 倍拡大）、上限 4GB | SageAttention の K / V の準備をブロックごとに 1 回で 2.39 s/it | 行の塊ごとに準備: 3.2 s/it（1.34 倍） | ビット一致 |
 
 ## このパッケージが全体に与える影響
 
@@ -201,6 +205,7 @@ VRAM が足りないとき（大きい画像、小さい GPU）に、Wan 2.1 の
 * 28 ブロック用の Anima の LoRA を Anima 2.9B（40 ブロックの版）に当てるためのフック（`WEIGHTFERRY_LORA_REMAP=0` でオフ）。
 * KSampler の一覧に、サンプラー `real` とスケジューラー `tors` を追加。
 * ComfyUI の Cosmos-Predict2 / Anima の `Block`・`Attention`・`GPT2FeedForward` のクラスに、要素ごとの演算をまとめた処理を入れる（結果はビット単位で同じ。`WEIGHTFERRY_FUSED_BLOCK=0` で無効）。
+* ComfyUI-GGUF が入っていれば、その展開（`ops.dequantize_tensor`・`GGMLLayer.get_weight`）を、重みごとに 1 本の Triton のカーネルに置き換える（Q4_0 / Q4_1 / Q5_0 / Q5_1 / Q8_0 と K-quant の Q2_K〜Q6_K）。LoRA は comfy 自身の `torch.mm` のあと同じカーネルの中で足し、LoRA の係数は固定 RAM から送る。結果はビット単位で同じ（`WEIGHTFERRY_GGUF_TRITON=0` ですべて無効。細かいスイッチは [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md)）。LoRA の係数を固定 RAM に置いた時点から、外した LoRA の固定 RAM を返すため、ComfyUI の `free_memory`・`unload_all_models`・`soft_empty_cache` を包む。
 * ストリーミングのノードの `sage_attention` / `sage_pv_fp16` は、アテンションを全体で差し替え、元に戻しません。
 
 ## 困ったとき
@@ -209,7 +214,7 @@ VRAM が足りないとき（大きい画像、小さい GPU）に、Wan 2.1 の
 * **「Anima fused block: Triton not available ...」**: ブロックの融合のうち Triton を使う部分（`mod`・`modq`・`gelu`・`rms`・`ln`・`tay`）がオフになり、ほかの部分はそのまま効きます（画像は同じで、少し遅いだけ）。使うには Triton（Windows では `triton-windows`）を入れてください。
 * **Wan で「required rank 4 tensor to use channels_last format」**: `--force-channels-last` を付けずに ComfyUI を起動してください（Wan の 5 次元の重みでの ComfyUI 側の制限）。
 * **例のワークフローで `anima-base-v1.0_fp8_scaled.safetensors` / `..._int8_convrot.safetensors` が見つからない**: ファイルを作るか（[例のワークフロー](#例のワークフロー) の 3）、その読み込みノードを再びバイパス（Ctrl+B）して切り替えを `1`（bf16）に戻してください。
-* **ComfyUI 本来の動作に戻したい**: ストリーミングのノードをバイパス（Ctrl+B）。[全体への変更](#このパッケージが全体に与える影響) のうち、切れるのはブロックの融合（`WEIGHTFERRY_FUSED_BLOCK=0`）と LoRA の読み替え（`WEIGHTFERRY_LORA_REMAP=0`）です。TF32、1ms のタイマー、Triton のキャッシュの場所（`TRITON_CACHE_DIR` を自分で設定していなければ）、`real` / `tors` の追加は、パッケージを入れている間はそのままです。SageAttention の差し替えは、一度使うと ComfyUI を再起動するまで残ります。
+* **ComfyUI 本来の動作に戻したい**: ストリーミングのノードをバイパス（Ctrl+B）。[全体への変更](#このパッケージが全体に与える影響) のうち、切れるのはブロックの融合（`WEIGHTFERRY_FUSED_BLOCK=0`）、GGUF の展開（`WEIGHTFERRY_GGUF_TRITON=0`）、LoRA の読み替え（`WEIGHTFERRY_LORA_REMAP=0`）です。TF32、1ms のタイマー、Triton のキャッシュの場所（`TRITON_CACHE_DIR` を自分で設定していなければ）、`real` / `tors` の追加は、パッケージを入れている間はそのままです。SageAttention の差し替えは、一度使うと ComfyUI を再起動するまで残ります。
 
 ## コマンドラインの一覧
 
@@ -232,7 +237,7 @@ fp8 の変換はブロックごとの重みを連続した範囲に書くので�
 
 ### 環境変数
 
-`WEIGHTFERRY_*` の 60 個（どれも任意。調整・低 VRAM のスイッチ・デバッグ・既定でオンのものを切るスイッチ）。既定値と根拠の計測は [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md)（英語）。
+`WEIGHTFERRY_*` の 65 個（どれも任意。調整・低 VRAM のスイッチ・デバッグ・既定でオンのものを切るスイッチ）。既定値と根拠の計測は [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md)（英語）。`ComfyUI/user/weightferry.env` に 1 行 1 つ `名前=値` で書いても効きます（本物の環境変数が優先。Comfy Desktop で便利）。
 
 ## 制限
 

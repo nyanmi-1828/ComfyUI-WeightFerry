@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-weightferry"
 description = "Run diffusion transformers and LLM text encoders larger than your VRAM in ComfyUI by streaming their layers from RAM / SSD, bit-exact with ComfyUI; plus speed-ups for Anima (Cosmos-Predict2): fused block kernels, TaylorSeer, CFG early stop."
-version = "1.0.0"
+version = "1.0.1"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 # Everything else comes with ComfyUI; optional extras (SageAttention, Triton / triton-windows, gguf for the GGUF

@@ -273,7 +273,11 @@ was set, so ComfyUI and WeightFerry had the same N GB. ComfyUI launch arguments:
 | Qwen2.5-VL 7B text encoder on the streamed LLM engine (the engine alone) | ~1.7–1.9x faster, +2.0 GB VRAM | ComfyUI's own text-encoder code on the same tokens | bit-exact |
 | Little RAM: SSD tier with a 2 GB RAM budget | 0.91x the speed of RAM only, 660 MB less pinned RAM | all blocks in RAM | bit-exact |
 | Anima 2x upscale without tiles, 4 GB / 2 GB GPU | 61.0 / 74.3 s per image with `auto_config` (no manual settings) | the same workflow without a limit: 51.5 s | LPIPS ~0.008 against no limit (looks the same) |
-| Anima fused block kernels (int8 ConvRot, CFG 5) | 26.8 ms per block | ComfyUI's block: 32.6 ms (18% less time, ~1.22x) | bit-exact |
+| Anima fused block kernels (int8 ConvRot, CFG 5) | 22.1 ms per block | ComfyUI's block: 30.3 ms (1.37x; alternating, median) | bit-exact |
+| Anima GGUF Q5_1 (ComfyUI-GGUF), model fits | 1.67 s/it with the one-kernel dequantisation | ComfyUI-GGUF's dequantisation: 2.37 s/it (1.42x; Q4_1 1.19x, Q8_0 1.03x) | bit-exact |
+| Anima GGUF Q5_1 + LoRAs, model fits / VRAM limited to 4 GB, both with the one-kernel dequantisation | 1.68 / 0.97 s/it with the LoRA factors in pinned RAM | the factors copied from pageable RAM (as ComfyUI-GGUF keeps them): 1.89 / 1.18 s/it (1.12x / 1.22x) | bit-exact |
+| Wan 2.1 14B GGUF Q4_K_M, VRAM limited to 4 GB | 1.91 s/it with the K-quant kernel | ComfyUI-GGUF's K-quant dequantisation: 2.81 s/it (1.47x, alternating in one process) | bit-exact |
+| Anima 1792x2944 by token rows (the 2x upscale without tiles), VRAM limited to 4 GB | 2.39 s/it, SageAttention's key / value preparation once per block | once per row chunk: 3.2 s/it (1.34x) | bit-exact |
 
 ## What this package changes globally
 
@@ -287,6 +291,12 @@ Loading the package has side effects outside its own nodes:
 * The `real` sampler and the `tors` scheduler are added to KSampler's lists.
 * ComfyUI's Cosmos-Predict2 / Anima `Block`, `Attention` and `GPT2FeedForward` classes get fused element-wise kernels (same results bit for
   bit; `WEIGHTFERRY_FUSED_BLOCK=0` turns it off).
+* With ComfyUI-GGUF installed, its dequantisation (`ops.dequantize_tensor`, `GGMLLayer.get_weight`) is replaced by one
+  Triton kernel per weight (Q4_0 / Q4_1 / Q5_0 / Q5_1 / Q8_0 and the K-quants Q2_K–Q6_K), with LoRA patches added in
+  the same kernel after comfy's own `torch.mm` and the LoRA factors copied from pinned RAM; the same results bit for
+  bit (`WEIGHTFERRY_GGUF_TRITON=0` turns it all off; the finer switches are in
+  [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md)). Once a LoRA factor is pinned, ComfyUI's `free_memory` /
+  `unload_all_models` / `soft_empty_cache` are wrapped to give that pinned RAM back after a LoRA is removed.
 * The streaming node's `sage_attention` / `sage_pv_fp16` options patch attention globally and are not undone.
 
 ## Troubleshooting
@@ -303,8 +313,8 @@ Loading the package has side effects outside its own nodes:
   (see [Example workflows](#example-workflows), step 3), or bypass that loader again (Ctrl+B) and set the switch back
   to `1` (bf16).
 * **Back to ComfyUI's own behaviour**: bypass the streaming node (Ctrl+B). Of the
-  [global changes](#what-this-package-changes-globally), the fused block (`WEIGHTFERRY_FUSED_BLOCK=0`) and the LoRA
-  remap (`WEIGHTFERRY_LORA_REMAP=0`) can be switched off; TF32, the 1 ms timer, the Triton cache folder (unless you set
+  [global changes](#what-this-package-changes-globally), the fused block (`WEIGHTFERRY_FUSED_BLOCK=0`), the GGUF
+  dequantisation (`WEIGHTFERRY_GGUF_TRITON=0`) and the LoRA remap (`WEIGHTFERRY_LORA_REMAP=0`) can be switched off; TF32, the 1 ms timer, the Triton cache folder (unless you set
   `TRITON_CACHE_DIR`) and the `real` / `tors` entries stay while the package is installed, and the SageAttention
   patch, once used, stays until ComfyUI restarts.
 
@@ -332,8 +342,9 @@ from the file.
 
 ### Environment variables
 
-60 optional `WEIGHTFERRY_*` variables (tuning, low-VRAM switches, debugging, off-switches for features on by default), each with its default and
-the measurement behind it: [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md).
+65 optional `WEIGHTFERRY_*` variables (tuning, low-VRAM switches, debugging, off-switches for features on by default), each with its default and
+the measurement behind it: [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md). They can also be written to
+`ComfyUI/user/weightferry.env` (one `NAME=value` per line; a real environment variable wins), handy with Comfy Desktop.
 
 ## Limitations
 
