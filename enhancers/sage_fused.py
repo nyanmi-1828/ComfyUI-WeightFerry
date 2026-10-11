@@ -327,29 +327,57 @@ def rms_rope(x, f, w, eps):
     return out
 
 
-def sage_nhd(q, k, v, pv_accum_dtype, q_norm=None, q_rope=None):
+def prepare_kv(k, v, pv_accum_dtype):
+    """The key and value side of sage_nhd (the smoothed int8 keys with their scales, the fp8 values with theirs),
+    which depends on k / v only: computed once, it serves any number of query chunks against the same k / v (the
+    activation-streaming rows, enhancers/fused_block.rows_attention) with the bits of computing it per call. None
+    when not sage_nhd's case."""
+    import sageattention.core as core
+    b, kv_len, h_kv, head_dim = k.shape
+    if head_dim not in (64, 128) or v.shape != k.shape:
+        return None
+    if k.dtype != torch.bfloat16:  # the key quantiser rounds k - km to bfloat16 (_r16); float16 would round otherwise
+        return None
+    km = k.mean(dim=1, keepdim=True)  # as Sage: (b, 1, h, d) in the input dtype
+    BLKK, WARPK = 64, 64
+    k_int8 = torch.empty(k.shape, dtype=torch.int8, device=k.device)
+    k_scale = torch.empty((b, h_kv, (kv_len + BLKK - 1) // BLKK * (BLKK // WARPK) * 4), device=k.device,
+                          dtype=torch.float32)
+    grid = ((kv_len + BLKK - 1) // BLKK * (BLKK // WARPK) * 4, h_kv, b)
+    _get_kernel()[grid](
+        k, km, k_int8, k_scale, kv_len, k.stride(0), k.stride(2), k.stride(1), km.stride(0), km.stride(2),
+        k_int8.stride(0), k_int8.stride(2), k_int8.stride(1), k_scale.stride(0), k_scale.stride(1),
+        C=head_dim, BLK=WARPK)
+    scale_max = 2.25 if pv_accum_dtype == "fp32+fp16" else 448.0
+    if _FUSE_V and v.stride(-1) == 1 and v.stride(3) == 1:
+        v_fp8, v_scale = v_fp8_nhd(v, scale_max)
+    else:
+        v_fp8, v_scale, _vm = core.per_channel_fp8(v, tensor_layout="NHD", scale_max=scale_max, smooth_v=False)
+    return {"k_int8": k_int8, "k_scale": k_scale, "v_fp8": v_fp8, "v_scale": v_scale, "shape": tuple(k.shape),
+            "pv": pv_accum_dtype}
+
+
+def sage_nhd(q, k, v, pv_accum_dtype, q_norm=None, q_rope=None, kv=None):
     """sageattn_qk_int8_pv_fp8_cuda(q, k, v, tensor_layout="NHD", is_causal=False, sm_scale=None,
     pv_accum_dtype=pv_accum_dtype, smooth_k=True) for bf16 (batch, tokens, heads, 64 or 128) inputs with the
     key smoothing inside the key quantiser. q_norm = (weight, eps): q is the input of an RMSNorm over its 128 values
     (bf16 weight), applied by the query quantiser; q_rope = (rotations, weight, eps): q is the input of comfy_kitchen's
-    RMSNorm + split-half RoPE (rope_ok's case), applied by the query quantiser. None when the shapes are not that
-    case."""
+    RMSNorm + split-half RoPE (rope_ok's case), applied by the query quantiser. kv: prepare_kv(k, v, pv_accum_dtype)
+    made earlier (k / v are then not read). None when the shapes are not that case."""
     import sageattention.core as core
     from sageattention.triton.quant_per_thread import quant_query_per_thread_int8_kernel
     b, qo_len, h_qo, head_dim = q.shape
     _, kv_len, h_kv, _ = k.shape
     if head_dim not in (64, 128) or h_qo != h_kv or k.shape[-1] != head_dim or v.shape != k.shape:
         return None
-    if k.dtype != torch.bfloat16:  # the key quantiser rounds k - km to bfloat16 (_r16); float16 would round otherwise
+    if kv is None:
+        kv = prepare_kv(k, v, pv_accum_dtype)
+    if kv is None or kv["shape"] != tuple(k.shape) or kv["pv"] != pv_accum_dtype:
         return None
     sm_scale = head_dim ** -0.5
-    km = k.mean(dim=1, keepdim=True)  # as Sage: (b, 1, h, d) in the input dtype
-    WARPQ, BLKQ, BLKK, WARPK = 32, 128, 64, 64
+    WARPQ, BLKQ = 32, 128
     q_int8 = torch.empty(q.shape, dtype=torch.int8, device=q.device)
-    k_int8 = torch.empty(k.shape, dtype=torch.int8, device=k.device)
     q_scale = torch.empty((b, h_qo, (qo_len + BLKQ - 1) // BLKQ * (BLKQ // WARPQ) * 8), device=q.device,
-                          dtype=torch.float32)
-    k_scale = torch.empty((b, h_kv, (kv_len + BLKK - 1) // BLKK * (BLKK // WARPK) * 4), device=q.device,
                           dtype=torch.float32)
     grid = ((qo_len + BLKQ - 1) // BLKQ * (BLKQ // WARPQ) * 8, h_qo, b)
     if q_rope is not None:
@@ -372,17 +400,8 @@ def sage_nhd(q, k, v, pv_accum_dtype, q_norm=None, q_rope=None):
             q, q_int8, q_scale, qo_len, q.stride(0), q.stride(2), q.stride(1),
             q_int8.stride(0), q_int8.stride(2), q_int8.stride(1), q_scale.stride(0), q_scale.stride(1),
             C=head_dim, BLK=WARPQ)
-    grid = ((kv_len + BLKK - 1) // BLKK * (BLKK // WARPK) * 4, h_kv, b)
-    _get_kernel()[grid](
-        k, km, k_int8, k_scale, kv_len, k.stride(0), k.stride(2), k.stride(1), km.stride(0), km.stride(2),
-        k_int8.stride(0), k_int8.stride(2), k_int8.stride(1), k_scale.stride(0), k_scale.stride(1),
-        C=head_dim, BLK=WARPK)
+    k_int8, k_scale, v_fp8, v_scale = kv["k_int8"], kv["k_scale"], kv["v_fp8"], kv["v_scale"]
     o = torch.empty(q.size(), dtype=q.dtype, device=q.device)
-    scale_max = 2.25 if pv_accum_dtype == "fp32+fp16" else 448.0
-    if _FUSE_V and v.stride(-1) == 1 and v.stride(3) == 1:
-        v_fp8, v_scale = v_fp8_nhd(v, scale_max)
-    else:
-        v_fp8, v_scale, _vm = core.per_channel_fp8(v, tensor_layout="NHD", scale_max=scale_max, smooth_v=False)
     if pv_accum_dtype == "fp32+fp16":
         core._qattn_sm89.qk_int8_sv_f8_accum_f16_fuse_v_scale_attn_inst_buf(
             q_int8, k_int8, v_fp8, o, q_scale, k_scale, v_scale, 0, 0, 3, sm_scale, 0)

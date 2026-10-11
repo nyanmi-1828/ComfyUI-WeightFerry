@@ -278,6 +278,7 @@ def _cosmos_block_rows(blk, x_B_T_H_W_D, emb_B_T_D, crossattn_emb, rope_emb_L_1_
             V[:, i:i + n].copy_(vc)
             del vc
         # pass 2: every chunk through the whole block
+        kv_cache = {}  # SageAttention's key / value preparation for this block's K / V (fused_block.rows_attention)
         for i, xc in _row_chunks(x, extra, S, rows, dev):
             n = xc.shape[1]
             if fused:
@@ -294,7 +295,7 @@ def _cosmos_block_rows(blk, x_B_T_H_W_D, emb_B_T_D, crossattn_emb, rope_emb_L_1_
                 q_scale, _, q_os = comfy.ops.cast_bias_weight(attn.q_norm, qc, offloadable=True)
             qc = ck.rms_rope_split_half(qc, qc, rc, q_scale, q_scale, eps)[0]
             if fused:
-                res = fb.rows_attention(attn, qc, K, V, transformer_options)
+                res = fb.rows_attention(attn, qc, K, V, transformer_options, kv_cache)
                 del qc
                 xc = fb.rows_out_residual(attn.output_proj, attn.output_dropout, res, xc, g_sa, residual_dtype)
                 del res

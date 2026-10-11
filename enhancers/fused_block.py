@@ -75,6 +75,9 @@ DEFAULT_PARTS = PARTS  # every part (smk on by default since 2026-10-11, the use
 _DEFER_QNORM = True  # smk: the cross-attention's q norm inside the query quantiser (module constant for benchmarks)
 _DEFER_QROPE = True  # smk: the self-attention's q norm + RoPE inside the query quantiser (module constant)
 _TRITON_PARTS = ("mod", "modq", "gelu", "rms", "ln", "tay", "smk")
+# activation streaming (rows): SageAttention's key / value preparation once per block, not per row chunk
+# (rows_attention; WEIGHTFERRY_ACT_KV_ONCE, off by default; module constant for benchmarks)
+_ROWS_KV = _env.get("WEIGHTFERRY_ACT_KV_ONCE") == "1"
 
 
 def stats(reset=False):
@@ -544,9 +547,12 @@ def rows_project(block, layers, ln, scale, shift, compute_dtype, transformer_opt
     return outs
 
 
-def rows_attention(attn, q, K, V, transformer_options):
+def rows_attention(attn, q, K, V, transformer_options, kv_cache=None):
     """The self-attention of one query chunk q (B, n, H, Dh) against the full K / V (B, S, H, Dh), as (B, n, H * Dh):
-    SageAttention in the projections' layout (nhd) when ComfyUI would run SageAttention, else ComfyUI's call."""
+    SageAttention in the projections' layout (nhd) when ComfyUI would run SageAttention, else ComfyUI's call. With
+    smk and kv_cache (a dict the caller keeps for one block's K / V and drops after it): SageAttention's key / value
+    preparation (key mean, smoothed int8 keys, fp8 values) is done once for all the chunks instead of in every call
+    (enhancers/sage_fused.prepare_kv), the same bits."""
     import comfy.ldm.cosmos.predict2 as p2
     from comfy.ldm.modules.attention import AttentionTensorContainer
     fn = p2.optimized_attention
@@ -555,6 +561,23 @@ def rows_attention(attn, q, K, V, transformer_options):
             and V.is_contiguous() and q.dim() == 4):
         _count("nhd", True)
         b, n, h, d = q.shape
+        if (kv_cache is not None and "smk" in _state["parts"] and _ROWS_KV
+                and "optimized_attention_override" not in transformer_options):
+            from . import sage_fused
+            pv = sage_fused.available(q)
+            out = None
+            if pv is not None:
+                try:
+                    if kv_cache.get("pv") != pv:
+                        kv_cache["kv"], kv_cache["pv"] = sage_fused.prepare_kv(K, V, pv), pv
+                    if kv_cache["kv"] is not None:
+                        out = sage_fused.sage_nhd(q, K, V, pv, kv=kv_cache["kv"])
+                except Exception as exc:  # noqa: BLE001 -- ComfyUI's call instead
+                    _count("rows_kv", False, repr(exc)[:120])
+                    out = None
+            _count("rows_kv", out is not None, None if out is not None else "not SageAttention's sm89 case")
+            if out is not None:
+                return out.view(b, n, h * d)
         return fn(q.view(b, n, h * d), K.view(b, K.shape[1], h * d), V.view(b, V.shape[1], h * d), h,
                   skip_reshape=False, preferred_attention=attn.comfy_attention, transformer_options=transformer_options)
     return attn.attn_op(AttentionTensorContainer(q), AttentionTensorContainer(K), AttentionTensorContainer(V),
