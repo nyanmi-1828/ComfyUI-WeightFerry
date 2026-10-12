@@ -20,17 +20,30 @@ import comfy.model_management as model_management
 import comfy.utils
 
 
-def _rrdb_append_forward(orig):
+def _rrdb_append_forward(orig, epilogue=False):
     """spandrel's ResidualDenseBlock_5C.forward (ESRGAN / RRDB models such as 4x-UltraSharp) with its growing
     concatenations torch.cat((x, x1, ...), 1) replaced by one buffer per call that x and each new conv output are
     copied into once; each conv reads a channel prefix of it, for batch 1 a contiguous NCHW view with the same shape
     and strides as the cat. The same convolutions, inputs and order: the same bits (2026-10-12, 4x-UltraSharp float16
     on 896x1472 as USDU runs it: identical output, x1.11; the concatenations were 15.8% of the GPU time). Other cases
-    (batch > 1, the "plus" variant, non-contiguous input) take spandrel's code."""
+    (batch > 1, the "plus" variant, non-contiguous input) take spandrel's code.
+    epilogue (WEIGHTFERRY_UPSCALE_RRDB_EPILOGUE, off by default): conv1..conv4 (Conv2d -> LeakyReLU) run without
+    their bias and one kernel adds the bias, applies the LeakyReLU and writes straight into the buffer (_conv_act_into)."""
     def forward(self, x):
         if self.conv1x1 is not None or x.shape[0] != 1 or not x.is_contiguous():
             return orig(self, x)
         nf = x.shape[1]
+        if epilogue:
+            gc = _out_channels(self.conv1)
+            if gc is not None:
+                buf = torch.empty((1, nf + 4 * gc) + tuple(x.shape[2:]), dtype=x.dtype, device=x.device)
+                buf[:, :nf].copy_(x)
+                _conv_act_into(self.conv1, x, buf[:, nf:nf + gc])
+                _conv_act_into(self.conv2, buf[:, :nf + gc], buf[:, nf + gc:nf + 2 * gc])
+                _conv_act_into(self.conv3, buf[:, :nf + 2 * gc], buf[:, nf + 2 * gc:nf + 3 * gc])
+                _conv_act_into(self.conv4, buf[:, :nf + 3 * gc], buf[:, nf + 3 * gc:])
+                x5 = self.conv5(buf)
+                return x5 * 0.2 + x
         x1 = self.conv1(x)
         gc = x1.shape[1]
         buf = torch.empty((1, nf + 4 * gc) + tuple(x.shape[2:]), dtype=x.dtype, device=x.device)
@@ -46,6 +59,73 @@ def _rrdb_append_forward(orig):
         return x5 * 0.2 + x
     forward._weightferry = True
     return forward
+
+
+def _out_channels(block):
+    try:
+        return int(block[0].out_channels)
+    except Exception:  # noqa: BLE001 -- not a Sequential(Conv2d, ...): the plain append path
+        return None
+
+
+_epi = {}
+
+
+def _epilogue_kernel():
+    """y (the conv output without bias, contiguous) + bias[c], rounded to the tensor's dtype, then LeakyReLU, written
+    to dst: PyTorch's own two steps -- the cuDNN convolution's separate bias add_ (Convolution.cpp: computed in float,
+    rounded to the dtype) and LeakyReLU (ActivationLeakyReluKernel.cu: in float, x > 0 ? x : x * slope, slope as a
+    float) -- with the same roundings, in one pass instead of three (add_, leaky_relu_, copy_). None without Triton."""
+    if "k" in _epi:
+        return _epi["k"]
+    try:
+        import triton
+        import triton.language as tl
+    except Exception:  # noqa: BLE001 -- no Triton: the plain append path
+        _epi["k"] = None
+        return None
+
+    @triton.jit
+    def _bias_leaky(y_ptr, b_ptr, o_ptr, n, hw, slope, BLOCK: tl.constexpr):
+        offs = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
+        m = offs < n
+        v = tl.load(y_ptr + offs, mask=m).to(tl.float32)
+        b = tl.load(b_ptr + offs // hw, mask=m).to(tl.float32)
+        t = (v + b).to(o_ptr.dtype.element_ty).to(tl.float32)
+        r = tl.where(t > 0, t, t * slope)
+        tl.store(o_ptr + offs, r.to(o_ptr.dtype.element_ty), mask=m)
+
+    def run(y, bias, dst, slope):
+        n = y.numel()
+        _bias_leaky[(triton.cdiv(n, 1024),)](y, bias, dst, n, y.shape[2] * y.shape[3], float(slope), BLOCK=1024,
+                                             enable_fp_fusion=False)
+    _epi["k"] = run
+    return run
+
+
+def _conv_act_into(block, inp, dst):
+    """dst <- block(inp) for spandrel's conv_block Sequential(Conv2d, LeakyReLU): the same F.conv2d without its bias,
+    then the epilogue kernel; anything else (other layers, hooks, padding modes, dtypes, autocast, gradients, CPU)
+    takes block(inp) and a copy."""
+    k = _epilogue_kernel()
+    nn = torch.nn
+    ok = (k is not None and type(block) is nn.Sequential and len(block) == 2 and inp.is_cuda and inp.is_contiguous()
+          and type(block[0]) is nn.Conv2d and type(block[1]) is nn.LeakyReLU and block[0].bias is not None
+          and block[0].padding_mode == "zeros" and isinstance(block[0].padding, tuple)
+          and inp.dtype in (torch.float16, torch.float32, torch.bfloat16)
+          and block[0].weight.dtype == inp.dtype and block[0].bias.dtype == inp.dtype
+          and not torch.is_autocast_enabled() and not (torch.is_grad_enabled() and block[0].weight.requires_grad)
+          and not (block._forward_hooks or block._forward_pre_hooks or block[0]._forward_hooks
+                   or block[0]._forward_pre_hooks or block[1]._forward_hooks or block[1]._forward_pre_hooks))
+    if not ok:
+        dst.copy_(block(inp))
+        return
+    c = block[0]
+    y = torch.nn.functional.conv2d(inp, c.weight, None, c.stride, c.padding, c.dilation, c.groups)
+    if y.shape != dst.shape or not y.is_contiguous():
+        dst.copy_(block[1](y + c.bias.view(1, -1, 1, 1)))  # not expected; the reference steps
+        return
+    k(y, c.bias, dst, block[1].negative_slope)
 
 
 _warned = []
@@ -71,7 +151,7 @@ def _rrdb_append():
         yield
         return
     orig = cls.forward
-    cls.forward = _rrdb_append_forward(orig)
+    cls.forward = _rrdb_append_forward(orig, _env.get("WEIGHTFERRY_UPSCALE_RRDB_EPILOGUE") == "1")
     try:
         yield
     finally:
