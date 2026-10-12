@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # From ssitu/ComfyUI_UltimateSDUpscale 1.7.2 usdu_patch.py (GPL-3.0); modified 2026-10-10 for ComfyUI-WeightFerry: relative imports, no extra log handler; the batched redraw also skips flat tiles and uses the high-pass noise (Ultimate SD Upscale+)
+# 2026-10-12: the tile mask blur and composite on the crop region only (WEIGHTFERRY_USDU_LOCAL_COMPOSITE, the same bytes)
 
 """
 Refactored USD Upscaler batch processing patch.

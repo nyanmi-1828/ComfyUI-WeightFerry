@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # From ssitu/ComfyUI_UltimateSDUpscale 1.7.2 usdu_utils.py (GPL-3.0); modified 2026-10-10 for ComfyUI-WeightFerry: renamed to image_utils.py
+# 2026-10-12: the tile mask blur and composite on the crop region only (WEIGHTFERRY_USDU_LOCAL_COMPOSITE, the same bytes)
 
 import numpy as np
 from PIL import Image, ImageFilter
@@ -575,7 +576,7 @@ def crop_cond(cond, regions, init_size, canvas_size, tile_size, w_pad=0, h_pad=0
 # 2026-10-12 (WeightFerry): the tile's mask blur and composite on the tile's crop region only, instead of over the whole
 # image -- the same bytes. The mask outside the crop region is never used (the composite's alpha is 0 there); around
 # it, a margin of 4 x blur + 4 px covers the blur's reach (PIL's Gaussian blur is three box blurs of about 1.15 x blur
-# each). WEIGHTFERRY_USDU_LOCAL_COMPOSITE (module constant LOCAL_COMPOSITE for tests)
+# each). WEIGHTFERRY_USDU_LOCAL_COMPOSITE (on by default since 2026-10-12; module constant LOCAL_COMPOSITE for tests)
 try:
     from ..core import env as _env
     LOCAL_COMPOSITE = _env.get("WEIGHTFERRY_USDU_LOCAL_COMPOSITE") == "1"
