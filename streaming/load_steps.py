@@ -59,6 +59,14 @@ class _LoadContext:
     quant_lora_reserved_mb: object
     text_encoder: bool
     use_storage_dtype: bool
+    resident_idx: list = None   # the resident blocks' indices (default: 0 .. resident_k - 1)
+    stream_idx: list = None     # the streamed blocks' indices, in order (default: resident_k .. num_blocks - 1)
+
+    def __post_init__(self):
+        if self.resident_idx is None:
+            self.resident_idx = list(range(self.resident_k))
+        if self.stream_idx is None:
+            self.stream_idx = list(range(self.resident_k, self.num_blocks))
 
 
 @dataclasses.dataclass
@@ -334,7 +342,7 @@ def _install_resident_profiler_hooks(ctx, state):
                 state.profiler.record_resident(b, "r_end", torch.cuda.current_stream(state.device))
         return pre, post
 
-    for b_idx in range(ctx.resident_k):
+    for b_idx in ctx.resident_idx:
         pre_h, post_h = make_resident_hooks(b_idx)
         state.handles.append(blocks_list[b_idx].register_forward_pre_hook(pre_h))
         state.handles.append(blocks_list[b_idx].register_forward_hook(post_h))
@@ -523,8 +531,8 @@ def _direct_file_source(ctx, lay):
     direct = None
     if tiering_auto and not convert_idx and _env.get("WEIGHTFERRY_DIRECT_FILE") != "0":
         all_blocks = list(resident_list) + list(streaming_blocks)
-        all_idx = list(range(resident_k)) if resident_list else []
-        all_idx += list(range(resident_k, num_blocks))
+        all_idx = list(ctx.resident_idx) if resident_list else []
+        all_idx += list(ctx.stream_idx)
         # LoRA on scaled fp8 weights: bake, transfer, or auto (estimate)
         quant_lora_mode = _env.get("WEIGHTFERRY_QUANT_LORA")
         if quant_lora_mode == "auto":
@@ -598,7 +606,7 @@ def _capture_cache(ctx, lay, cap):
     # and the layout are unchanged.
     patches_uuid = getattr(patcher, "patches_uuid", None)
     cache_key = (
-        "v3-resident-mode", patches_uuid, resident_k, num_blocks, bool(pin_memory), str(compute_dtype),
+        "v3-resident-mode", patches_uuid, tuple(ctx.resident_idx), num_blocks, bool(pin_memory), str(compute_dtype),
         bool(resident_list), bool(tiering_auto), ram_budget_bytes if tiering_auto else None,
         bool(direct), _env.get("WEIGHTFERRY_SSD_LAYOUT") if tiering_auto else None,
         tuple((shape, str(dt), str(hd)) for (shape, dt), hd in zip(slot_specs, host_dtypes)),
@@ -1084,7 +1092,7 @@ def _persist_lookup(ctx, lay, plan, tier):
     if tier.persist_cap > 0:
         try:
             tier.persist_key = _persist_key(ctx.patcher, ctx.dit, ctx.streaming_blocks,
-                                            list(range(ctx.resident_k, ctx.num_blocks)), lay.host_specs,
+                                            list(ctx.stream_idx), lay.host_specs,
                                             lay.host_offsets, lay.host_bytes, tier.disk_pos, ctx.compute_dtype)
         except Exception as exc:  # noqa: BLE001 -- no persistence for this load
             tier.persist_key = None
@@ -1159,7 +1167,7 @@ def _capture_streamed_blocks(ctx, lay, tier, holders, quant_params, cap_t):
                     if not (s_i in disk_d and (direct is not None or persist_hit is not None))]
     if quant_idx and any(_quant_lora_on(streaming_blocks[s_i], j) for s_i in captured_idx for j in quant_idx):
         try:
-            f_src, f_rel = _block_file_source(dit, streaming_blocks, list(range(resident_k, num_blocks)))
+            f_src, f_rel = _block_file_source(dit, streaming_blocks, list(ctx.stream_idx))
         except Exception as exc:  # noqa: BLE001 -- fall back to the mmap
             f_src, f_rel = None, None
             log_warn(f"DiT Layer Streaming: reading the capture from the file failed ({exc}); "

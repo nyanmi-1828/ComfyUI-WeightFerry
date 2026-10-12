@@ -250,6 +250,19 @@ class WeightFerryDiT:
         if stream_block0:
             log_info("DiT Layer Streaming [chunks]: block 0 streams too (chunk streaming hooks every layer).")
         num_stream = num_blocks - resident_k
+        # WEIGHTFERRY_RESIDENT_SPREAD (2026-10-13, web research 2.1; off by default): block 0 resident (as always) and
+        # the other resident blocks spread evenly between the streamed ones instead of 1 .. k-1, so the transfer of a
+        # streamed block can overlap a resident block's compute (vLLM / sglang PrefetchOffloader, musubi-tuner); the
+        # same blocks run in the same order
+        resident_idx = list(range(resident_k))
+        if _env.get("WEIGHTFERRY_RESIDENT_SPREAD") == "1" and 1 < resident_k < num_blocks:
+            rest = resident_k - 1
+            picks = sorted({1 + int((j + 0.5) * (num_blocks - 1) / rest) for j in range(rest)})
+            resident_idx = [0] + [min(num_blocks - 1, i) for i in picks]
+            resident_idx = sorted(set(resident_idx))
+        resident_set = set(resident_idx)
+        stream_idx = [i for i in range(num_blocks) if i not in resident_set]
+        num_stream = len(stream_idx)
         is_double = "Double Buffer" in buffer_mode
 
         if num_stream <= 0:
@@ -291,7 +304,7 @@ class WeightFerryDiT:
             _teardown(dit, "re-load")
             vram_budget.apply(target_device, "DiT load")
 
-            streaming_blocks = [blocks_list[i] for i in range(resident_k, num_blocks)]
+            streaming_blocks = [blocks_list[i] for i in stream_idx]
             ctx = _LoadContext(
                 dit=dit, patcher=patcher, owner=owner, target_device=target_device,
                 compute_dtype=getattr(patcher.model, "manual_cast_dtype", None) or torch.bfloat16,
@@ -299,8 +312,9 @@ class WeightFerryDiT:
                 num_blocks=num_blocks, num_stream=num_stream, pin_memory=pin_memory, is_double=is_double,
                 prefetch_slots=prefetch_slots, chunk_wanted=chunk_wanted, tiering_auto=tiering_auto,
                 ram_budget_bytes=ram_budget_bytes, quant_lora_reserved_mb=quant_lora_reserved_mb,
-                text_encoder=_text_encoder, use_storage_dtype=use_storage_dtype)
-            lay = _Layout(resident_list=[blocks_list[i] for i in range(resident_k)] if self_resident else [],
+                text_encoder=_text_encoder, use_storage_dtype=use_storage_dtype,
+                resident_idx=resident_idx, stream_idx=stream_idx)
+            lay = _Layout(resident_list=[blocks_list[i] for i in resident_idx] if self_resident else [],
                           template_params=list(streaming_blocks[0].parameters()))
 
             # The block layout: checks, scaled fp8, GPU slots, host RAM, direct file reads, self-managed fit, LoRA
