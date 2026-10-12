@@ -206,9 +206,13 @@ def _get_kernel():
                  mask=m)
         tl.store(Scale + off_b * stride_sz + off_h * stride_sh + off_blk * 8 + off_tld, scale)
 
-    # Triton's default fused multiply-add on purpose (not fused_kernels.NoFMA): these reproduce SageAttention's own
-    # Triton quantisers, which compile with the default too, so both follow the same Triton (2026-10-12: with the
-    # Suite's kernels alone set to no FMA, one block with Sage was no longer bit-exact; with every kernel set, it was)
+    # Triton's default fused multiply-add on purpose (not fused_kernels.NoFMA): these kernels reproduce SageAttention's
+    # own Triton quantisers, which compile with the default too, so both follow the same Triton (2026-10-12: with these
+    # alone set to no FMA, one block with Sage and the rows path were no longer bit-exact; with every kernel, Sage's
+    # included, set to no FMA, they were). Some of them also hold reproductions of comfy_kitchen / PyTorch arithmetic
+    # (_rope_rows; the RMS sum of squares in _quant_query_rms / _quant_query_rope) that match with either setting today
+    # but would follow a change of Triton's default: after a Triton update, run scratch/verify testrun suites fma_off
+    # and fma_pinned.
     _kernel["k"] = _quant_key_smooth
     _kernel["v"] = _v_fp8
     _kernel["q_rms"] = _quant_query_rms
