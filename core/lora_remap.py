@@ -94,24 +94,25 @@ def install_lora_remap_patch() -> None:
     if getattr(orig_load_lora, "_weightferry_29b_patched", False):
         return
 
-    def patched_load_lora(lora: dict, to_load: dict):
+    def patched_load_lora(lora: dict, to_load: dict, *args, **kwargs):
+        # ComfyUI's hooks (comfy/hooks.py) call load_lora(..., log_missing=False): pass every extra argument through
         if not _is_remapping_enabled():
-            return orig_load_lora(lora, to_load)
+            return orig_load_lora(lora, to_load, *args, **kwargs)
 
         if not _is_anima_model(to_load):
-            return orig_load_lora(lora, to_load)
+            return orig_load_lora(lora, to_load, *args, **kwargs)
 
         model_blocks = _model_block_indices(to_load)
         if model_blocks != set(range(WeightFerryConfig.NUM_BLOCKS_29B)):
-            return orig_load_lora(lora, to_load)
+            return orig_load_lora(lora, to_load, *args, **kwargs)
 
         lora_blocks = _lora_block_indices(lora)
         if lora_blocks == set(range(WeightFerryConfig.NUM_BLOCKS_BASE)):
             remapped_to_load, count = _remap_key_map(to_load)
             log_info(f"Remapped {count} keys from 28-block base -> 40-block Anima-2.9B")
-            return orig_load_lora(lora, remapped_to_load)
+            return orig_load_lora(lora, remapped_to_load, *args, **kwargs)
 
-        return orig_load_lora(lora, to_load)
+        return orig_load_lora(lora, to_load, *args, **kwargs)
 
     patched_load_lora._weightferry_29b_patched = True
     comfy.lora.load_lora = patched_load_lora
