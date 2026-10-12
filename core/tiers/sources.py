@@ -159,6 +159,9 @@ def file_source(path, ranges):
     return FileBlockSource(path, ranges)
 
 
+_JOIN_TIMEOUT_S = 60  # how long close / resync wait for a reader thread to finish its read
+
+
 class DiskRing:
     """Background reader feeding SSD-tier blocks, in cyclic block order, into ``depth`` pinned ring buffers.
 
@@ -202,12 +205,12 @@ class DiskRing:
         for w in self._workers:
             # at interpreter exit daemon threads cannot run any more: join() would wait forever
             if not sys.is_finalizing():
-                w.join(timeout=60)
+                w.join(timeout=_JOIN_TIMEOUT_S)
         alive = [getattr(w, "name", repr(w)) for w in self._workers if w.is_alive()] if not sys.is_finalizing() else []
         if alive:
             # a reader still inside a read: its file handle and the ring buffers it writes into must stay (Codex CPU
             # check 2026-10-13: they were closed / released under it); the caller may try again
-            raise TimeoutError(f"SSD ring: reader threads still running after 60 s: {alive}")
+            raise TimeoutError(f"SSD ring: reader threads still running after {_JOIN_TIMEOUT_S} s: {alive}")
         for r in self._readers:
             r.close()
         self._workers, self._readers = [], []
@@ -306,6 +309,29 @@ class DiskRing:
 
     def at_cycle_start(self):
         return self.cons % self.n == 0
+
+    def failed(self):
+        """A reader failed (or a restart timed out): the ring must be restarted before it is read again."""
+        return getattr(self, "_error", None) is not None
+
+    def restart_if_needed(self, warn):
+        """At the end of a forward: restart the read cycle when the forward stopped part way through the SSD tier or
+        a reader failed -- also a failure while reading ahead for the next forward, which would otherwise fail every
+        later forward (review 30). A restart that times out (a reader still inside a read) keeps the ring marked
+        failed instead of raising here, where it would replace the forward's own exception; the next forward then
+        reports it and the next end tries again. Returns True when the ring was restarted."""
+        if self.at_cycle_start() and not self.failed():
+            return False
+        warn("SSD read-ahead: " + ("a reader failed; " if self.failed() else "forward pass stopped part way through "
+                                   "the SSD tier; ") + "restarting it.")
+        try:
+            self.resync()
+        except TimeoutError as exc:
+            if getattr(self, "_error", None) is None:
+                self._error = exc
+            warn(f"SSD read-ahead: could not restart ({exc}); the next forward will report it.")
+            return False
+        return True
 
     def close(self, release_buffers=True):
         self._stop_readers()

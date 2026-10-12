@@ -498,10 +498,8 @@ class _ChunkState(_StreamState):
             for s, held in list(self.ring_held.items()):
                 self._release_ring(held[1], torch.cuda.current_stream(self.device))
             self.ring_held = {}
-        if self.ring is not None and not self.ring.at_cycle_start():
-            log_warn("DiT Layer Streaming [chunks]: forward pass stopped part way through the SSD tier; "
-                     "restarting the SSD read-ahead.")
-            self.ring.resync()
+        if self.ring is not None:
+            self.ring.restart_if_needed(lambda m: log_warn("DiT Layer Streaming [chunks]: " + m))
         self.begin_forward()
 
     def restore_rest_binding(self):

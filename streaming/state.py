@@ -229,10 +229,12 @@ class _StreamState:
         """A forward pass must consume all SSD-tier blocks or none; otherwise restart the reader's cycle."""
         if self.uploader is not None:
             self.uploader.drain()  # normally empty: every submitted block was waited for in its pre-hook
-        if self.ring is not None and not self.ring.at_cycle_start():
-            log_warn("DiT Layer Streaming: forward pass stopped part way through the SSD tier; "
-                     "restarting the SSD read-ahead.")
-            self.ring.resync()
+        if self.ring is not None:
+            failed_upload = self.uploader is not None and self.uploader.error is not None
+            if failed_upload and getattr(self.ring, "_error", None) is None:
+                self.ring._error = self.uploader.error  # restart the cycle the failed upload left half consumed
+            if self.ring.restart_if_needed(lambda m: log_warn("DiT Layer Streaming: " + m)) and failed_upload:
+                self.uploader.error = None  # a fresh read cycle: the next forward may upload again (review 30)
 
     def issue_prefetch(self, s_idx):
         """Async DMA (+ dequantization / LoRA) of block s_idx into its slot, after that slot's last reader finished."""
