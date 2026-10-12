@@ -206,6 +206,9 @@ def _int8_linear_shared(x, weight, bias):
     return out if x.dim() == 2 else out.reshape(*x.shape[:-1], n)
 
 
+_VERIFY_GATES = False  # tests: check every merged call's gate rows (review 25)
+
+
 def _int8_linear_residual(x, weight, bias, res):
     """x_res + gate * linear(x) for the block's residual x_res (B, T, H, W, D) and gate (B, T, 1, 1, D): one CUTLASS
     GEMM with the residual epilogue per (batch, frame) group of rows. None when not possible (the caller runs the
@@ -238,6 +241,8 @@ def _int8_linear_residual(x, weight, bias, res):
     if res.get("same") and groups > 1 and xr3.is_contiguous() and out3.is_contiguous():
         # WEIGHTFERRY_CFG_RESID_MERGE: every group has the same gate (_rows_same): one GEMM over all the rows with
         # group 0's gate, the same bits as one GEMM per group (2026-10-11: identical, 4.21)
+        if _VERIFY_GATES:  # tests only (a sync per call): the gate rows really are the same
+            _count("resmerge_gate", bool(torch.equal(g2, g2[:1].expand_as(g2))), "gate rows differ")
         resid, o = xr3.reshape(groups * rows, D), out3.reshape(groups * rows, D)
         if not (kc._aligned16(resid) and kc._aligned16(o)):
             return None
