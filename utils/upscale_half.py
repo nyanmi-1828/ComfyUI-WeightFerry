@@ -51,7 +51,7 @@ def _rrdb_append_forward(orig):
 @contextlib.contextmanager
 def _rrdb_append():
     """While this node runs its model: spandrel's dense block with the append buffer (WEIGHTFERRY_UPSCALE_RRDB_APPEND),
-    restored afterwards (ComfyUI's own upscale node is not touched)."""
+    restored afterwards (ComfyUI's own upscale node is not touched). On by default since 2026-10-12."""
     from ..core import env as _env
     cls = None
     if _env.get("WEIGHTFERRY_UPSCALE_RRDB_APPEND") == "1":
