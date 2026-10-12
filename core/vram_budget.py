@@ -24,6 +24,7 @@ from . import env as _env
 _node_budget_gb = [0.0]   # the DiT node's vram_budget_gb of the last run (0 = the setting)
 _orig = {}                # ComfyUI's reserve / aimdo's headroom before the first raise
 _extra = [0]              # bytes added to ComfyUI's reserve by the budget now
+_peak_warned = []
 
 
 def set_node_budget(gb):
@@ -73,6 +74,20 @@ def kept_free():
     return _extra[0] + _orig.get("reserve", 0) if _extra[0] > 0 else 0
 
 
+def _warn_peak(device, budget):
+    """Once per process: the budget is a soft limit (an allocation beyond it is not refused, so no out-of-memory
+    fallback changes the image); say so when this process's peak so far went past it (review 23)."""
+    if _peak_warned:
+        return
+    import torch
+    peak = int(torch.cuda.max_memory_reserved(device))
+    if peak > budget:
+        _peak_warned.append(True)
+        from ..utils.logging import log_warn
+        log_warn(f"VRAM budget {budget / 1024 ** 3:.2f} GB: PyTorch's peak so far {peak / 1024 ** 2:.0f} MB went past it "
+                 "(the budget steers the automatic choices; allocations beyond it are not refused).")
+
+
 def apply(device, stage=""):
     """Re-derive the reserve for the budget at the start of a stage; restore ComfyUI's / aimdo's own values when there
     is no budget. Returns the bytes added to ComfyUI's reserve."""
@@ -93,6 +108,7 @@ def apply(device, stage=""):
         new = _orig["reserve"]
     else:
         import torch
+        _warn_peak(device, budget)
         free, _total = torch.cuda.mem_get_info(device)
         # free = total - others - ours: keeping R = free + ours - budget free leaves ours <= budget
         new = max(_orig["reserve"], int(free + process_used(device) - budget))
