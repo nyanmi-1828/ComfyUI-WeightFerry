@@ -32,6 +32,7 @@ from . import image_utils as usdu_utils
 logger = logging.getLogger(__name__)
 
 
+
 # Compatibility for older Pillow versions
 try:
     Image.Resampling  # type: ignore
@@ -212,8 +213,10 @@ def _prepare_tile_for_batch(calc_rectangle_fn, current_image: Image.Image, tx: i
         target_h = math.ceil(crop_h / 8) * 8
         crop_region, tile_size = usdu_utils.expand_crop(crop_region, tile_mask.width, tile_mask.height, target_w, target_h)
 
+    if usdu_utils.LOCAL_COMPOSITE:  # the blurred mask of the crop region only (image_utils.local_blurred_mask)
+        tile_mask = usdu_utils.local_blurred_mask(tile_mask, crop_region, getattr(p, "mask_blur", 0))
     # Optional blur
-    if getattr(p, "mask_blur", 0) > 0:
+    elif getattr(p, "mask_blur", 0) > 0:
         tile_mask = tile_mask.filter(ImageFilter.GaussianBlur(p.mask_blur))
 
     cropped_tile = current_image.crop(crop_region)
@@ -304,6 +307,11 @@ def _process_batch_tiles(p,
 
             if tile_sampled.size != initial_tile_size:
                 tile_sampled = tile_sampled.resize(initial_tile_size, Image.Resampling.LANCZOS)
+
+            if usdu_utils.LOCAL_COMPOSITE:  # the composite below on the crop region only
+                result_imgs[i] = result_img = usdu_utils.composite_tile_local(result_img, tile_sampled, tile_mask,
+                                                                             crop_region)
+                continue
 
             image_tile_only = Image.new('RGBA', result_img.size)
             image_tile_only.paste(tile_sampled, crop_region[:2])

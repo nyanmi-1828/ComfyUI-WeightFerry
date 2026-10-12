@@ -13,6 +13,7 @@ import comfy.utils as comfy_utils
 from enum import Enum
 from typing import Optional
 from ..image_utils import pil_to_tensor, tensor_to_pil, get_crop_region, expand_crop, crop_cond
+from .. import image_utils
 from . import shared
 from ..crop_model_patch import crop_model_cond
 
@@ -283,8 +284,10 @@ def process_images(p: StableDiffusionProcessing) -> Processed:
         crop_region, tile_size = expand_crop(crop_region, image_mask.width,
                                              image_mask.height, target_width, target_height)
 
-    # Blur the mask
-    if p.mask_blur > 0:
+    # Blur the mask (WeightFerry: on the crop region only with WEIGHTFERRY_USDU_LOCAL_COMPOSITE, the same values)
+    if image_utils.LOCAL_COMPOSITE:
+        image_mask = image_utils.local_blurred_mask(image_mask, crop_region, p.mask_blur)
+    elif p.mask_blur > 0:
         image_mask = image_mask.filter(ImageFilter.GaussianBlur(p.mask_blur))
 
     # Crop the images to get the tiles that will be used for generation
@@ -339,6 +342,10 @@ def process_images(p: StableDiffusionProcessing) -> Processed:
         # Resize back to the original size
         if tile_sampled.size != initial_tile_size:
             tile_sampled = tile_sampled.resize(initial_tile_size, Image.Resampling.LANCZOS)
+
+        if image_utils.LOCAL_COMPOSITE:  # the composite below on the crop region only (the same bytes)
+            shared.batch[i] = image_utils.composite_tile_local(init_image, tile_sampled, image_mask, crop_region)
+            continue
 
         # Put the tile into position
         image_tile_only = Image.new('RGBA', init_image.size)

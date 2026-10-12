@@ -570,3 +570,39 @@ def crop_cond(cond, regions, init_size, canvas_size, tile_size, w_pad=0, h_pad=0
         crop_reference_latents(cond_dict, regions, init_size, canvas_size, tile_size, w_pad, h_pad)
         cropped.append(n)
     return cropped
+
+
+# 2026-10-12 (WeightFerry): the tile's mask blur and composite on the tile's crop region only, instead of over the whole
+# image -- the same bytes. The mask outside the crop region is never used (the composite's alpha is 0 there); around
+# it, a margin of 4 x blur + 4 px covers the blur's reach (PIL's Gaussian blur is three box blurs of about 1.15 x blur
+# each). WEIGHTFERRY_USDU_LOCAL_COMPOSITE (module constant LOCAL_COMPOSITE for tests)
+try:
+    from ..core import env as _env
+    LOCAL_COMPOSITE = _env.get("WEIGHTFERRY_USDU_LOCAL_COMPOSITE") == "1"
+except Exception:  # noqa: BLE001
+    LOCAL_COMPOSITE = False
+
+
+def local_blurred_mask(mask, crop_region, blur):
+    """mask.filter(GaussianBlur(blur)).crop(crop_region) without blurring the whole image: the blur of a window of the
+    crop region plus the blur's reach (the same values)."""
+    x1, y1, x2, y2 = crop_region
+    m = 4 * blur + 4 if blur > 0 else 0
+    wx1, wy1 = max(0, x1 - m), max(0, y1 - m)
+    wx2, wy2 = min(mask.width, x2 + m), min(mask.height, y2 + m)
+    win = mask.crop((wx1, wy1, wx2, wy2))
+    if blur > 0:
+        win = win.filter(ImageFilter.GaussianBlur(blur))
+    return win.crop((x1 - wx1, y1 - wy1, x2 - wx1, y2 - wy1))
+
+
+def composite_tile_local(image, tile, mask_crop, crop_region):
+    """USDU's composite of a redrawn tile (the tile pasted at the crop region, the blurred mask as its alpha there,
+    alpha-composited over the image, back to RGB) done on the crop region only; a new image."""
+    t = tile.convert("RGBA")
+    t.putalpha(mask_crop)
+    region = image.crop(crop_region).convert("RGBA")
+    region.alpha_composite(t)
+    out = image.copy()
+    out.paste(region.convert("RGB"), crop_region[:2])
+    return out
