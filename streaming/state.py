@@ -270,6 +270,7 @@ class _StreamState:
         n = sum(int(f.numel()) for f in self.slot_flats)
         self._slot_flat_bytes = int(self.slot_flats[0].numel())
         self.slot_flats, self.slot_views = [], []
+        self.slot_ptrs = set()  # the freed addresses may be reused by other tensors (restore_rest_binding checks them)
         self.slots_released = True
         return n
 

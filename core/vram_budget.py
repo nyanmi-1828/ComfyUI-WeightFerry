@@ -105,7 +105,7 @@ def free_dit_slots(stage=""):
     freed = 0
     for lm in list(getattr(mm, "current_loaded_models", [])):
         try:
-            rm = lm.real_model() if lm.is_dead() else lm.model.model
+            rm = lm.real_model() if lm.real_model is not None else None  # the loaded BaseModel (live or dead entry)
             dit = getattr(rm, "diffusion_model", None)
             state = getattr(dit, _STATE_ATTR, None) if dit is not None else None
             if state is not None and hasattr(state, "release_slots"):
@@ -113,6 +113,10 @@ def free_dit_slots(stage=""):
         except Exception:  # noqa: BLE001 -- ComfyUI internals differ by version: nothing released
             pass
     if freed:
+        # PyTorch keeps the freed slots in its cache, where the stage's larger tensors cannot always reuse them (its
+        # reserved peak rose 2912 -> 3104 MiB at the upscale without this, review 27): give them to the device
+        import torch
+        torch.cuda.empty_cache()
         from ..utils.logging import log_info
         log_info(f"VRAM ({stage}): released the streamed DiT's GPU slots ({freed / 1024 ** 2:.0f} MB) until its "
                  "next forward.")
