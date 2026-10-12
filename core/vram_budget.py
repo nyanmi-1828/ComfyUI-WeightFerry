@@ -92,7 +92,7 @@ def _warn_peak(device, budget):
 
 
 def free_dit_slots(stage=""):
-    """WEIGHTFERRY_VAE_FREE_SLOTS (2026-10-13, Codex round 6 B2; on by default): before a VAE / upscale stage, give back
+    """WEIGHTFERRY_VAE_FREE_SLOTS (2026-10-13, Codex round 6 B2; off by default: the reserved peak did not drop): before a VAE / upscale stage, give back
     the GPU transfer slots of every streamed DiT ComfyUI still has loaded (3 x 132 MiB for Anima at prefetch 3; they
     were measured still held at the first USDU encode). They are allocated again when that DiT's next forward begins;
     every block is transferred into its slot before it runs anyway, so the output is the same. "1": always;
