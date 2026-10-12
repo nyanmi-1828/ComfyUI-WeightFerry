@@ -326,6 +326,14 @@ def _install_first_block_hook(ctx, state):
             if state.profiler is not None:
                 state.profiler.add_cpu(time.perf_counter() - t0)
     state.handles.append(ctx.blocks_list[0].register_forward_pre_hook(first_block_pre_hook))
+    # The block span for the tier planner ends after the DiT's last block. That block normally streams (its post-hook
+    # records the end); with WEIGHTFERRY_RESIDENT_SPREAD it may be resident, then its own post-hook does (review 37)
+    state.span_end_streamed = (not ctx.stream_idx) or ctx.stream_idx[-1] == ctx.num_blocks - 1
+    if not state.span_end_streamed:
+        def last_block_post_hook(module, args, output):
+            if getattr(dit, _ACTIVE_ATTR, None) is owner and state.span_start is not None:
+                state.span_end = _span_event(state)
+        state.handles.append(ctx.blocks_list[-1].register_forward_hook(last_block_post_hook))
 
 
 def _install_resident_profiler_hooks(ctx, state):
@@ -359,7 +367,7 @@ def _install_chunk_hooks(ctx, state):
 
         def chunk_block_post(module, args, output):
             if getattr(dit, _ACTIVE_ATTR, None) is owner:
-                if cur_s == state.num_stream - 1 and state.span_start is not None:
+                if cur_s == state.num_stream - 1 and state.span_start is not None and state.span_end_streamed:
                     state.span_end = _span_event(state)
                 state.block_post(cur_s)
                 # VRAM overflow is also checked inside the forward, every 12th block (~20 ms per check, the
@@ -494,8 +502,8 @@ def _install_block_stream_hooks(ctx, state):
             prof = state.profiler
             if prof is not None:
                 prof.record(cur_s, "end", torch.cuda.current_stream(state.device))
-            if cur_s == state.num_stream - 1 and state.span_start is not None:
-                # Block span for the tier planner (the last block is always a streaming block)
+            if cur_s == state.num_stream - 1 and state.span_start is not None and state.span_end_streamed:
+                # Block span for the tier planner (when the DiT's last block streams; else _install_first_block_hook)
                 state.span_end = _span_event(state)
             if not state.is_double:
                 return
