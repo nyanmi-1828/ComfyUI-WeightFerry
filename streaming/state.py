@@ -277,13 +277,16 @@ class _StreamState:
     def ensure_slots(self):
         if not getattr(self, "slots_released", False):
             return
-        self.slot_flats = [torch.empty(self._slot_flat_bytes, dtype=torch.uint8, device=self.device)
-                           for _ in range(self.num_slots)]
-        self.slot_views = [_views(f, self.slot_specs, self.slot_offsets) for f in self.slot_flats]
-        self.slot_ptrs = {v.data_ptr() for views in self.slot_views for v in views}
+        # built aside and published only when complete (Codex CPU check 2026-10-13: a failure halfway left slots in the
+        # state while it still read as released, so release_slots would skip them); the error is not swallowed
+        flats = [torch.empty(self._slot_flat_bytes, dtype=torch.uint8, device=self.device)
+                 for _ in range(self.num_slots)]
+        views = [_views(f, self.slot_specs, self.slot_offsets) for f in flats]
         compute = torch.cuda.current_stream(self.device)
         for ev in self.computed_events:  # the first prefetch into a new slot waits for the work queued so far
             ev.record(compute)
+        self.slot_flats, self.slot_views = flats, views
+        self.slot_ptrs = {v.data_ptr() for vs in views for v in vs}
         self.slots_released = False
 
     def prefetch_first_slots(self):
