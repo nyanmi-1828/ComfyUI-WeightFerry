@@ -20,6 +20,22 @@ PRE_LNMOD = 3  # LayerNorm (no affine), then the scale-and-shift
 _kernels = {}
 
 
+class NoFMA:
+    """A Triton kernel launched with fused multiply-add off (enable_fp_fusion=False): every product and sum rounded on
+    its own, as PyTorch's separate operations and the reproduced kernels do. Triton 3.x fuses by default (its main
+    branch no longer does), so the choice is pinned here for the kernels that reproduce comfy_kitchen's CUDA and
+    PyTorch's element-wise operations; they give the same bits either way today (2026-10-12: one fused block with /
+    without SageAttention, the quantiser at every width, the DiT latent). The reproductions of SageAttention's own
+    Triton kernels (sage_fused.py) keep Triton's default, as SageAttention does."""
+
+    def __init__(self, fn):
+        self.fn = fn
+
+    def __getitem__(self, grid):
+        launch = self.fn[grid]
+        return lambda *args, **kwargs: launch(*args, enable_fp_fusion=False, **kwargs)
+
+
 def _get_kernels():
     if _kernels:
         return _kernels
@@ -233,5 +249,6 @@ def _get_kernels():
         h = tl.load(h_ptr + offs, mask=m, other=0.0).to(tl.float32)
         tl.store(o_ptr + offs, _r16(h + pred).to(tl.bfloat16), mask=m)
 
-    _kernels.update(mod=_mod, quant_row=_quant_row, rms128=_rms128, lnmod=_lnmod, tay=_tay)
+    _kernels.update({k: NoFMA(v) for k, v in dict(mod=_mod, quant_row=_quant_row, rms128=_rms128, lnmod=_lnmod,
+                                                  tay=_tay).items()})
     return _kernels

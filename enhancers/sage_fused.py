@@ -206,6 +206,9 @@ def _get_kernel():
                  mask=m)
         tl.store(Scale + off_b * stride_sz + off_h * stride_sh + off_blk * 8 + off_tld, scale)
 
+    # Triton's default fused multiply-add on purpose (not fused_kernels.NoFMA): these reproduce SageAttention's own
+    # Triton quantisers, which compile with the default too, so both follow the same Triton (2026-10-12: with the
+    # Suite's kernels alone set to no FMA, one block with Sage was no longer bit-exact; with every kernel set, it was)
     _kernel["k"] = _quant_key_smooth
     _kernel["v"] = _v_fp8
     _kernel["q_rms"] = _quant_query_rms
