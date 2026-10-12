@@ -279,8 +279,6 @@ class DiskRing:
         if self.cons % self.n != d:
             raise RuntimeError(f"SSD ring out of sync: expected block {self.cons % self.n}, got {d}")
         slot = self.cons % self.depth
-        if getattr(self, "_error", None) is not None:
-            raise RuntimeError(f"SSD ring: a reader failed ({self._error!r})") from self._error
         if not self.ready[slot].is_set():
             t0 = time.perf_counter()
             # A wait of minutes is either a very slow drive (e.g. right after large writes) or a stuck pipeline:
@@ -294,7 +292,8 @@ class DiskRing:
                       f"(requested {self.req}, consumed {self.cons}, queue {self._q.qsize()}, "
                       f"slots (slot, block pos, read, DMA done) {pending})", flush=True)
             self.wait_s += time.perf_counter() - t0
-        if getattr(self, "_error", None) is not None:
+        if self.slot_pos[slot] != self.cons and getattr(self, "_error", None) is not None:
+            # this block was not read (a reader failed; blocks read before the failure are still served)
             raise RuntimeError(f"SSD ring: a reader failed ({self._error!r})") from self._error
         assert self.slot_pos[slot] == self.cons
         voff, n = self.slot_view[slot]
