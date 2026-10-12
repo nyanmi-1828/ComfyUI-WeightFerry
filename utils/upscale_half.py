@@ -30,8 +30,8 @@ def _rrdb_append_forward(orig, epilogue=False, residual=False):
     epilogue (WEIGHTFERRY_UPSCALE_RRDB_EPILOGUE, on by default since 2026-10-12): conv1..conv4 (Conv2d -> LeakyReLU)
     run without their bias and one kernel adds the bias, applies the LeakyReLU and writes straight into the buffer
     (_conv_act_into); the same bits, x1.03 on the same upscale.
-    residual (WEIGHTFERRY_UPSCALE_RRDB_RESIDUAL, off by default): conv5 runs without its bias and one kernel does the
-    bias add, x5 * 0.2 and + x (_conv5_residual)."""
+    residual (WEIGHTFERRY_UPSCALE_RRDB_RESIDUAL, on by default since 2026-10-12): conv5 runs without its bias and one
+    kernel does the bias add, x5 * 0.2 and + x (_conv5_residual); the same bits, x1.04 on the same upscale."""
     def tail(self, buf, x):
         if residual:
             return _conv5_residual(self.conv5, buf, x)
