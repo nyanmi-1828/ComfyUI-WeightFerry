@@ -17,6 +17,7 @@ import comfy.model_management
 from ..utils.logging import log_info, log_warn
 from ..core import env as _env
 from ..core import tiered_store
+from ..core import vram_budget
 from .common import (_ACTIVE_ATTR, _CACHE_ATTR, _flat_layout, _is_quant, _lora_apply_fn, _param_nbytes, _param_owner,
                      _quant_lora_requant, _quant_params_to, _quant_seed, _raw, _storage_dtype, _views)
 from .profiler import _StreamProfiler
@@ -253,6 +254,7 @@ def _fit_self_managed(ctx, lay):
             + (host_bytes if convert_idx else 0) + headroom
         free = comfy.model_management.get_free_memory(target_device)
         free -= int(getattr(dit, "_weightferry_vram_overflow_bytes", 0) or 0)  # overflow seen earlier (check_overflow)
+        free -= vram_budget.kept_free()  # VRAM kept free by the VRAM budget (0 without one)
         if need > free:
             log_warn(
                 f"DiT Layer Streaming: self-managed resident blocks do not fit in free VRAM "

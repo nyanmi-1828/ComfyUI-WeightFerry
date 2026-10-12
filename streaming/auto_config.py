@@ -9,6 +9,7 @@ import comfy.model_management
 from .common import _blocks, _param_nbytes
 from .capture import _quant_lora_transfer_vram
 from ..core import env as _env
+from ..core import vram_budget
 
 
 def _auto_config(dit, device, prefetch_slots, is_double, patcher=None):
@@ -48,6 +49,9 @@ def _auto_config(dit, device, prefetch_slots, is_double, patcher=None):
     # VRAM that overflowed into system RAM on an earlier load of this model (check_overflow): keep it free now
     overflow_penalty = int(getattr(dit, "_weightferry_vram_overflow_bytes", 0) or 0)
     usable -= overflow_penalty
+    # VRAM budget (core/vram_budget): the VRAM it keeps free stays free (0 without a budget)
+    budget_kept = vram_budget.kept_free()
+    usable -= budget_kept
     headroom = int(_env.get("WEIGHTFERRY_AUTO_HEADROOM_MB")) * 1024 ** 2
     quant_lora_extra = _quant_lora_transfer_vram(dit, patcher)
     headroom += quant_lora_extra
@@ -57,6 +61,7 @@ def _auto_config(dit, device, prefetch_slots, is_double, patcher=None):
             "free_vram_mb": round(free / 1024 ** 2),
             "loaded_models_mb": round(loaded / 1024 ** 2),
             "overflow_penalty_mb": round(overflow_penalty / 1024 ** 2),
+            "vram_budget_kept_mb": round(budget_kept / 1024 ** 2),
             "total_vram_mb": round(total / 1024 ** 2),
             "block_mb": round(block_bytes / 1024 ** 2, 1),
             "nonblock_mb": round(nonblock_bytes / 1024 ** 2),

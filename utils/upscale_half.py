@@ -300,6 +300,8 @@ class WeightFerryUpscaleWithModelHalf:
             image = image[..., :3]
         memory_required = (512 * 512 * 3) * image.element_size() * max(upscale_model.scale, 1.0) * 384.0
         memory_required += image.nelement() * image.element_size()
+        from ..core import vram_budget
+        vram_budget.apply(device, "upscale")
         model_management.load_models_gpu([upscale_model.patcher], memory_required=memory_required, force_full_load=True)
         model = upscale_model.model
         orig_dtype = next(model.parameters()).dtype

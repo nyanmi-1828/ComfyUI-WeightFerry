@@ -159,10 +159,12 @@ class WeightFerryVAEDecodeExactTiles:
         from .logging import log_info
         out_px = z.shape[3] * 8 * z.shape[4] * 8
         dsize = mm.dtype_size(vae.vae_dtype)
+        from ..core import vram_budget
+        vram_budget.apply(vae.device, "VAE decode")
         mm.load_models_gpu([vae.patcher], memory_required=1, force_full_load=vae.disable_offload)
         chosen = mode
         if mode == "auto":
-            chosen = choose_mode(out_px, mm.get_free_memory(vae.device), dsize)
+            chosen = choose_mode(out_px, mm.get_free_memory(vae.device) - vram_budget.kept_free(), dsize)
             mm.load_models_gpu([vae.patcher], memory_required=peak_bytes(chosen, out_px, dsize),
                                force_full_load=vae.disable_offload)
         log_info(f"VAE Decode (Exact Tiles): {tuple(z.shape)} -> {chosen}"

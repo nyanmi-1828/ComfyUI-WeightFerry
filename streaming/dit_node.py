@@ -16,6 +16,7 @@ from comfy.patcher_extension import CallbacksMP, WrappersMP
 from ..utils.logging import log_info, log_warn
 from ..core import env as _env
 from ..core import tiered_store
+from ..core import vram_budget
 from ..core import vram_monitor
 from .common import (HOST_FORMAT_BAKED, HOST_FORMAT_STORAGE, RESIDENT_MODE_COMFY, RESIDENT_MODE_SELF, TIERING_AUTO,
                      TIERING_RAM, _ACTIVE_ATTR, _BLOCK_LIST_ATTRS, _STATE_ATTR, _TE_ROOTS, _WRAPPER_KEY, _blocks,
@@ -128,6 +129,15 @@ class WeightFerryDiT:
                     "tooltip": "GPU slots with Double Buffer (blocks prefetched + 1). 3: fastest (measured 0.94x of no streaming, "
                                "one more slot of VRAM). 2: less VRAM (0.90x). One slot = one block (about 132 MB for Anima 2B)"
                 }),
+                "vram_budget_gb": ("FLOAT", {
+                    "default": 0.0,
+                    "min": 0.0,
+                    "max": 512.0,
+                    "step": 0.5,
+                    "tooltip": "Most VRAM ComfyUI may use (GB); the automatic choices (resident blocks, activation streaming, "
+                               "caches, VAE tiles, ComfyUI's model loads) plan inside it, so only the speed changes, not the "
+                               "image. 0: WEIGHTFERRY_VRAM_BUDGET_GB, else no budget (all free VRAM, fastest)"
+                }),
             }
         }
 
@@ -152,6 +162,7 @@ class WeightFerryDiT:
         ram_budget_gb: float = 0.0,
         auto_config: bool = False,  # the node's default is on (INPUT_TYPES); direct calls (tests) choose the mode
         sage_pv_fp16: bool = False,
+        vram_budget_gb: float = 0.0,
         _root=None,
         _key_prefix=None,
         _text_encoder=False,
@@ -207,6 +218,9 @@ class WeightFerryDiT:
         # VRAM that auto_config kept for re-quantizing LoRA'd scaled fp8 weights after each transfer (None: auto_config
         # not used). The load below may pick "transfer" only when it was kept
         quant_lora_reserved_mb = None
+        if not _text_encoder:
+            vram_budget.set_node_budget(vram_budget_gb)
+        vram_budget.apply(device, "DiT")
         if auto_config or _env.get("WEIGHTFERRY_AUTO") == "1":
             auto_resident, auto_info = _auto_config(dit, device, prefetch_slots, "Double Buffer" in buffer_mode,
                                                     patcher=model_patcher)
@@ -275,6 +289,7 @@ class WeightFerryDiT:
             # Any previous state (ours from an earlier load, or another config's) is discarded.
             # Thanks to the rest-binding invariant, parameters now hold real, unaliased weights.
             _teardown(dit, "re-load")
+            vram_budget.apply(target_device, "DiT load")
 
             streaming_blocks = [blocks_list[i] for i in range(resident_k, num_blocks)]
             ctx = _LoadContext(
