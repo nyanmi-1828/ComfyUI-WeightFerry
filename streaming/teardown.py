@@ -5,11 +5,13 @@ Releasing the streaming state and idle text encoder caches."""
 
 import torch
 
-from ..utils.logging import log_info
+from ..utils.logging import log_info, log_warn
 from ..core import tiered_store
 from .common import _ACTIVE_ATTR, _CACHE_ATTR, _STATE_ATTR, _TE_ROOTS
 from .activation import _uninstall_attn_chunking, _uninstall_block_chunking, _uninstall_mlp_chunking
 from ..core import env as _env
+
+_STUCK_RINGS = []  # SSD rings whose reader threads did not stop: kept alive (their buffers may still be written)
 
 
 def _release_idle_text_encoder_caches(reason):
@@ -78,7 +80,13 @@ def _teardown(dit, reason):
         log_info(f"DiT Layer Streaming [tiers]: CPU waited {state.ring.wait_s * 1000:.0f} ms in total "
                  f"for SSD reads during this load.")
     if state.ring is not None:
-        state.ring.close()
+        try:
+            state.ring.close()
+        except TimeoutError as exc:
+            # a reader thread is still inside a read: keep the ring (its file handles and pinned buffers) alive
+            # rather than free memory under it; the rest of the teardown goes on
+            _STUCK_RINGS.append(state.ring)
+            log_warn(f"DiT Layer Streaming [tiers]: {exc}; its buffers are kept until the process exits.")
         state.ring = None
     if state.profiler is not None:
         m = state.profiler.summary()["mean_excluding_first_forward"]

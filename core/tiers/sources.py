@@ -188,6 +188,7 @@ class DiskRing:
         self.prime()
 
     def _start_readers(self):
+        self._error = None  # the first exception of a reader thread (raised to the consumer by acquire)
         self._q = queue.Queue()
         self._readers = [_UnbufferedReader(self.store.path) for _ in range(self.threads)]
         self._workers = [threading.Thread(target=self._run, args=(r,), daemon=True, name=f"weightferry-ssd-ring-{i}")
@@ -202,6 +203,11 @@ class DiskRing:
             # at interpreter exit daemon threads cannot run any more: join() would wait forever
             if not sys.is_finalizing():
                 w.join(timeout=60)
+        alive = [getattr(w, "name", repr(w)) for w in self._workers if w.is_alive()] if not sys.is_finalizing() else []
+        if alive:
+            # a reader still inside a read: its file handle and the ring buffers it writes into must stay (Codex CPU
+            # check 2026-10-13: they were closed / released under it); the caller may try again
+            raise TimeoutError(f"SSD ring: reader threads still running after 60 s: {alive}")
         for r in self._readers:
             r.close()
         self._workers, self._readers = [], []
@@ -212,11 +218,17 @@ class DiskRing:
             scratch, s_holder = aligned_host(self.store.scratch_bytes, pin=False)
         try:
             self._loop(reader, scratch)
-        except OSError:
+        except BaseException as exc:  # noqa: BLE001 -- handed to the consumer below
             # the process is exiting: _delete_live_cache_files closed this reader's handle under it
-            if getattr(reader, "handle", None) is None and getattr(reader, "f", None) is None:
+            if isinstance(exc, OSError) and getattr(reader, "handle", None) is None and getattr(reader, "f", None) is None:
                 return
-            raise
+            # a failed read (EOF, I/O error) must reach the forward waiting in acquire() instead of leaving it
+            # waiting for a block that never comes (Codex CPU check 2026-10-13): record it and wake every waiter
+            if getattr(self, "_error", None) is None:
+                self._error = exc
+            for ev in self.ready:
+                ev.set()
+            print(f"[tiers] SSD ring reader failed: {exc!r}", flush=True)
         finally:
             if s_holder is not None:
                 s_holder.release()
@@ -264,6 +276,8 @@ class DiskRing:
         if self.cons % self.n != d:
             raise RuntimeError(f"SSD ring out of sync: expected block {self.cons % self.n}, got {d}")
         slot = self.cons % self.depth
+        if getattr(self, "_error", None) is not None:
+            raise RuntimeError(f"SSD ring: a reader failed ({self._error!r})") from self._error
         if not self.ready[slot].is_set():
             t0 = time.perf_counter()
             # A wait of minutes is either a very slow drive (e.g. right after large writes) or a stuck pipeline:
@@ -277,6 +291,8 @@ class DiskRing:
                       f"(requested {self.req}, consumed {self.cons}, queue {self._q.qsize()}, "
                       f"slots (slot, block pos, read, DMA done) {pending})", flush=True)
             self.wait_s += time.perf_counter() - t0
+        if getattr(self, "_error", None) is not None:
+            raise RuntimeError(f"SSD ring: a reader failed ({self._error!r})") from self._error
         assert self.slot_pos[slot] == self.cons
         voff, n = self.slot_view[slot]
         return self.bufs[slot][voff:voff + n], slot
