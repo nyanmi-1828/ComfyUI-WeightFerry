@@ -30,38 +30,6 @@ from .load_steps import (_Capture, _Layout, _LoadContext, _build_state, _capture
                          _lora_functions, _rest_binding, _scaled_fp8_params, _slot_layout)
 
 
-def _cfg_batch_always(model_patcher):
-    """WEIGHTFERRY_CFG_BATCH=always (2026-10-12, off by default): ComfyUI runs the cond and uncond of CFG as one batch
-    only when it estimates they fit in the free VRAM (samplers._calc_cond_batch asks the patcher's get_free_memory);
-    with less VRAM it runs them one by one, and the DiT then gives other bits (a 2 GB GPU: another USDU image than
-    8 GB). Here the patcher of this model reports unlimited free memory to that check, so the batch is the same at
-    every VRAM size and only the speed differs; the streaming's activation handling carries the larger batch.
-    Marked on the BaseModel (shared by every clone, e.g. the LoRA / TaylorSeer nodes downstream); the class method is
-    wrapped once."""
-    if _env.get("WEIGHTFERRY_CFG_BATCH") != "always":
-        return
-    base = getattr(model_patcher, "model", None)
-    if base is None:
-        return
-    base._weightferry_cfg_batch_always = True
-    cls = type(model_patcher)
-    for klass in cls.__mro__:
-        fn = klass.__dict__.get("get_free_memory")
-        if fn is not None:
-            break
-    else:
-        return
-    if getattr(fn, "_weightferry", False):
-        return
-
-    def get_free_memory(self, device):
-        if getattr(getattr(self, "model", None), "_weightferry_cfg_batch_always", False):
-            return 1 << 60
-        return fn(self, device)
-    get_free_memory._weightferry = True
-    setattr(cls, "get_free_memory", get_free_memory)
-
-
 class WeightFerryDiT:
     """
     Layer streaming for a ComfyUI DiT: the transformer blocks that do not stay resident are streamed from pinned
@@ -211,8 +179,6 @@ class WeightFerryDiT:
 
         # clone() copies the ModelPatcher only; diffusion_model itself is shared with other clones
         model_patcher = model if _text_encoder else model.clone()
-        if not _text_encoder:
-            _cfg_batch_always(model_patcher)
         if _env.get("WEIGHTFERRY_GGUF_KEEP_MMAP") == "1" and getattr(model_patcher, "mmap_released", None) is False:
             # ComfyUI-GGUF's patcher copies every layer it does not put on the GPU out of the file's mmap into private
             # RAM on its first load; the streaming keeps those CPU originals as the rest binding, so a 15.9 GB GGUF
