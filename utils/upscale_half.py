@@ -27,8 +27,9 @@ def _rrdb_append_forward(orig, epilogue=False):
     and strides as the cat. The same convolutions, inputs and order: the same bits (2026-10-12, 4x-UltraSharp float16
     on 896x1472 as USDU runs it: identical output, x1.11; the concatenations were 15.8% of the GPU time). Other cases
     (batch > 1, the "plus" variant, non-contiguous input) take spandrel's code.
-    epilogue (WEIGHTFERRY_UPSCALE_RRDB_EPILOGUE, off by default): conv1..conv4 (Conv2d -> LeakyReLU) run without
-    their bias and one kernel adds the bias, applies the LeakyReLU and writes straight into the buffer (_conv_act_into)."""
+    epilogue (WEIGHTFERRY_UPSCALE_RRDB_EPILOGUE, on by default since 2026-10-12): conv1..conv4 (Conv2d -> LeakyReLU)
+    run without their bias and one kernel adds the bias, applies the LeakyReLU and writes straight into the buffer
+    (_conv_act_into); the same bits, x1.03 on the same upscale."""
     def forward(self, x):
         if self.conv1x1 is not None or x.shape[0] != 1 or not x.is_contiguous():
             return orig(self, x)
