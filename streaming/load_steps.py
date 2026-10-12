@@ -1024,7 +1024,9 @@ def _plan_tiers(ctx, lay, ram_margin):
         if plan.get("over_budget"):
             log_warn(f"DiT Layer Streaming [tiers]: the minimum pinned RAM "
                      f"({plan['host_ram_planned_mb']:.0f} MB) exceeds the RAM budget "
-                     f"({plan['ram_budget_mb']:.0f} MB).")
+                     f"({plan['ram_budget_mb']:.0f} MB)"
+                     + (f"; the SSD tier is unavailable ({plan['disk_error']}), so every block is kept in RAM."
+                        if plan.get("disk_error") else "."))
     return plan
 
 

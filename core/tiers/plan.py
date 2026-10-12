@@ -131,7 +131,9 @@ def plan_tiers(num_stream, block_bytes, ram_budget_bytes=None, ram_margin_bytes=
         "resident_ram_blocks": res_ram,
         "resident_disk_blocks": n_res - res_ram,
         "host_ram_planned_mb": round(host_planned / MB, 1),
-        "over_budget": bool(n_disk) and host_planned > budget,
+        # also when the SSD tier could not be used (no read speed: everything in RAM) and RAM is short (Codex CPU
+        # check 2026-10-13: the all-RAM fallback reported over_budget False with 3.7 GB planned against 0)
+        "over_budget": host_planned > budget,
         "disk_dir": disk_dir,
         "disk_read_gbps": disk_gbps,
         "disk_threads": disk_threads,
