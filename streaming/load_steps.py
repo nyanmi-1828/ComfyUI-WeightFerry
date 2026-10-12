@@ -1095,10 +1095,40 @@ def _persist_lookup(ctx, lay, plan, tier):
         if os.path.isfile(tier.p_bin) and os.path.isfile(tier.p_json):
             try:
                 with open(tier.p_json, encoding="utf-8") as f:
-                    tier.persist_hit = json.load(f)
-                os.utime(tier.p_json)  # LRU
+                    meta = json.load(f)
             except (OSError, ValueError):  # damaged entry: capture and write it again
-                tier.persist_hit = None
+                meta = None
+            if meta is not None and _persist_meta_ok(meta, tier.persist_key, tier.n_disk_plan, lay.host_bytes,
+                                                     tier.p_bin):
+                tier.persist_hit = meta
+                try:
+                    os.utime(tier.p_json)  # LRU; a failure here does not make the entry unusable
+                except OSError:
+                    pass
+            elif meta is not None:
+                log_warn(f"DiT Layer Streaming [persist]: the SSD cache entry {tier.p_bin} does not match its "
+                         f"metadata (incomplete or stale); writing it again.")
+        if tier.persist_hit is None:
+            # the entry is about to be written again (the bin opened for writing): its old metadata must not make a
+            # half-written file look complete if this run stops before the new metadata (Codex CPU check 2026-10-13)
+            try:
+                os.remove(tier.p_json)
+            except OSError:
+                pass
+
+
+def _persist_meta_ok(meta, key, blocks, block_bytes, p_bin):
+    """A persistent entry's metadata belongs to this key and layout and its data file has the length the blocks need
+    (the last block's padding may be absent). Not a content check: same-length damage is not detected."""
+    if not (isinstance(meta, dict) and meta.get("key") == key and meta.get("blocks") == blocks
+            and meta.get("block_bytes") == block_bytes and isinstance(meta.get("quant_scales", {}), dict)):
+        return False
+    try:
+        size = os.path.getsize(p_bin)
+    except OSError:
+        return False
+    stride = tiered_store.align_up(block_bytes)
+    return blocks > 0 and (blocks - 1) * stride + block_bytes <= size <= blocks * stride
 
 
 def _capture_streamed_blocks(ctx, lay, tier, holders, quant_params, cap_t):

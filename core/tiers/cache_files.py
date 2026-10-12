@@ -258,7 +258,7 @@ def persist_enforce_cap(directory, cap_bytes, keep_key=None):
             continue
         e = entries.setdefault(key, {"bytes": 0, "used": 0.0, "paths": []})
         e["bytes"] += st.st_size
-        e["paths"].append(path)
+        e["paths"].append((path, st.st_size))
         if name.endswith(".json"):
             e["used"] = st.st_mtime
     total = sum(e["bytes"] for e in entries.values())
@@ -268,11 +268,11 @@ def persist_enforce_cap(directory, cap_bytes, keep_key=None):
             break
         if key == keep_key:
             continue
-        for path in e["paths"]:
+        for path, size in e["paths"]:
             try:
                 os.remove(path)
-            except OSError:
-                pass
-        total -= e["bytes"]
-        deleted += e["bytes"]
+            except OSError:  # in use / no permission: still on disk, so not counted (Codex CPU check 2026-10-13)
+                continue
+            total -= size
+            deleted += size
     return deleted
