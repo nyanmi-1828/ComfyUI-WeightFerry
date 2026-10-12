@@ -234,7 +234,81 @@ def _residual_into(out, x):
     return out
 
 
+def _strip_tail_ok(seq):
+    """spandrel's RRDBNet body ends with ..., upconv (nn.Upsample nearest x2 + Sequential(Conv2d, act)), hr_conv0
+    (Sequential(Conv2d, act)), hr_conv1 (Conv2d): the last three convolutions are 3x3, stride 1, zero padding 1."""
+    nn = torch.nn
+    try:
+        up, hr0, hr1 = seq[-3], seq[-2], seq[-1]
+        convs = [up[1][0], hr0[0], hr1]
+        return (type(seq) is nn.Sequential and type(up) is nn.Sequential and type(up[0]) is nn.Upsample
+                and up[0].mode == "nearest" and float(up[0].scale_factor) == 2.0 and len(up) == 2
+                and type(up[1]) is nn.Sequential and len(up[1]) == 2 and type(hr0) is nn.Sequential and len(hr0) == 2
+                and all(type(c) is nn.Conv2d and c.kernel_size == (3, 3) and c.stride == (1, 1) and c.padding == (1, 1)
+                        and c.dilation == (1, 1) and c.groups == 1 and c.padding_mode == "zeros" for c in convs)
+                and not any(m._forward_hooks or m._forward_pre_hooks for m in (up, hr0, hr1)))
+    except Exception:  # noqa: BLE001 -- another layout: the whole model at once
+        return False
+
+
+def _strip_forward(orig, rows):
+    """WEIGHTFERRY_UPSCALE_STRIPS (2026-10-13, web research 3.2; off by default): RRDBNet.forward with its last stage --
+    nearest x2, upconv, hr_conv0, hr_conv1 at the output resolution, where the largest tensors are (64 channels at 4x)
+    -- computed in horizontal strips of ``rows`` output rows: each strip takes the rows of the previous feature map it
+    needs plus a halo of 3 output rows (three 3x3 convolutions), so every output pixel sees the same inputs; at the
+    image's top / bottom the strip starts at the edge, where the zero padding is the model's own. Bit-exact only if
+    cuDNN computes each output pixel the same way for the strip's shape as for the whole tile (checked by the probe)."""
+    def forward(self, x):
+        seq = self.model
+        if self.shuffle_factor or not _strip_tail_ok(seq) or x.shape[0] != 1:
+            return orig(self, x)
+        f = seq[:-3](x)
+        H, W = f.shape[2] * 2, f.shape[3] * 2
+        if H <= rows:
+            return seq[-3:](f)
+        up, hr0, hr1 = seq[-3], seq[-2], seq[-1]
+        out = None
+        for r0 in range(0, H, rows):
+            r1 = min(H, r0 + rows)
+            lo, hi = max(0, r0 - 3), min(H, r1 + 3)
+            a, b = lo // 2, (hi + 1) // 2
+            s = up[0](f[:, :, a:b])[:, :, lo - 2 * a:hi - 2 * a]
+            y = hr1(hr0(up[1](s)))[:, :, r0 - lo:r1 - lo]
+            if out is None:
+                out = torch.empty((1, y.shape[1], H, W), dtype=y.dtype, device=y.device)
+            out[:, :, r0:r1] = y
+        return out
+    forward._weightferry = True
+    return forward
+
+
 _warned = []
+
+
+@contextlib.contextmanager
+def _strips():
+    """While this node runs its model: spandrel's RRDBNet with its last stage in strips (WEIGHTFERRY_UPSCALE_STRIPS =
+    output rows per strip, 0 = off), restored afterwards."""
+    from ..core import env as _env
+    try:
+        rows = int(_env.get("WEIGHTFERRY_UPSCALE_STRIPS") or 0)
+    except ValueError:
+        rows = 0
+    cls = None
+    if rows > 0:
+        try:
+            from spandrel.architectures.ESRGAN.__arch.RRDB import RRDBNet as cls
+        except Exception:  # noqa: BLE001 -- spandrel moved it: the whole tile at once
+            cls = None
+    if cls is None or getattr(cls.forward, "_weightferry", False):
+        yield
+        return
+    orig = cls.forward
+    cls.forward = _strip_forward(orig, rows)
+    try:
+        yield
+    finally:
+        cls.forward = orig
 
 
 @contextlib.contextmanager
@@ -327,7 +401,7 @@ class WeightFerryUpscaleWithModelHalf:
                     steps = in_img.shape[0] * comfy.utils.get_tiled_scale_steps(in_img.shape[3], in_img.shape[2],
                                                                                 tile_x=tile, tile_y=tile, overlap=overlap)
                     pbar = comfy.utils.ProgressBar(steps)
-                    with _rrdb_append():
+                    with _rrdb_append(), _strips():
                         s = comfy.utils.tiled_scale(in_img, run_tile, tile_x=tile,
                                                     tile_y=tile, overlap=overlap, upscale_amount=upscale_model.scale,
                                                     pbar=pbar, output_device=output_device)
