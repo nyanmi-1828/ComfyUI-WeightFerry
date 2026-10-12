@@ -82,8 +82,10 @@ def _epilogue_kernel():
     try:
         import triton
         import triton.language as tl
-    except Exception:  # noqa: BLE001 -- no Triton: the plain append path
+    except Exception as exc:  # noqa: BLE001 -- no Triton: the plain append path
         _epi["k"] = None
+        from .logging import log_warn
+        log_warn(f"Upscale: Triton is not available ({exc!r}); WEIGHTFERRY_UPSCALE_RRDB_EPILOGUE has no effect.")
         return None
 
     @triton.jit
