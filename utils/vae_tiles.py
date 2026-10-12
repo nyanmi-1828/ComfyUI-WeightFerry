@@ -161,6 +161,7 @@ class WeightFerryVAEDecodeExactTiles:
         dsize = mm.dtype_size(vae.vae_dtype)
         from ..core import vram_budget
         vram_budget.apply(vae.device, "VAE decode")
+        vram_budget.free_dit_slots("VAE decode")
         mm.load_models_gpu([vae.patcher], memory_required=1, force_full_load=vae.disable_offload)
         chosen = mode
         if mode == "auto":

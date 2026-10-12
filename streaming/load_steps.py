@@ -749,6 +749,8 @@ def _build_state(ctx, lay, cap):
                              compute_dtype=compute_dtype, staging_flat=staging_flat,
                              staging_views=staging_views)
     state.reused_capture = cap.reused
+    if not use_chunk:  # the slot layout, for re-allocating released slots (_StreamState.release_slots)
+        state.slot_specs, state.slot_offsets = slot_specs, slot_offsets
     state.host_specs, state.host_offsets = host_specs, host_offsets
     state.tier_plan = cap.plan
     state.holders = cap.holders  # keeps exact-size pinned buffers alive even without a capture cache

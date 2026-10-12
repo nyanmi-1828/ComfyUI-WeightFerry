@@ -91,6 +91,34 @@ def _warn_peak(device, budget):
                  "(the budget steers the automatic choices; allocations beyond it are not refused).")
 
 
+def free_dit_slots(stage=""):
+    """WEIGHTFERRY_VAE_FREE_SLOTS (2026-10-13, Codex round 6 B2; off by default): before a VAE / upscale stage, give back
+    the GPU transfer slots of every streamed DiT ComfyUI still has loaded (3 x 132 MiB for Anima at prefetch 3; they
+    were measured still held at the first USDU encode). They are allocated again when that DiT's next forward begins;
+    every block is transferred into its slot before it runs anyway, so the output is the same. "1": always;
+    "budget": only while the VRAM budget binds."""
+    mode = _env.get("WEIGHTFERRY_VAE_FREE_SLOTS")
+    if mode not in ("1", "budget") or (mode == "budget" and _extra[0] <= 0):
+        return 0
+    import comfy.model_management as mm
+    from ..streaming.common import _STATE_ATTR
+    freed = 0
+    for lm in list(getattr(mm, "current_loaded_models", [])):
+        try:
+            rm = lm.real_model() if lm.is_dead() else lm.model.model
+            dit = getattr(rm, "diffusion_model", None)
+            state = getattr(dit, _STATE_ATTR, None) if dit is not None else None
+            if state is not None and hasattr(state, "release_slots"):
+                freed += state.release_slots()
+        except Exception:  # noqa: BLE001 -- ComfyUI internals differ by version: nothing released
+            pass
+    if freed:
+        from ..utils.logging import log_info
+        log_info(f"VRAM ({stage}): released the streamed DiT's GPU slots ({freed / 1024 ** 2:.0f} MB) until its "
+                 "next forward.")
+    return freed
+
+
 def apply(device, stage=""):
     """Re-derive the reserve for the budget at the start of a stage; restore ComfyUI's / aimdo's own values when there
     is no budget. Returns the bytes added to ComfyUI's reserve."""

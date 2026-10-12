@@ -13,7 +13,7 @@ try:
 except ImportError:  # pragma: no cover
     QuantizedTensor = ()
 
-from .common import _blocks, _copy_quant_params_, _quant_lora_requant, _raw
+from .common import _blocks, _copy_quant_params_, _quant_lora_requant, _raw, _views
 from .activation import _prefetch_stream
 from ..core import env as _env
 
@@ -254,7 +254,36 @@ class _StreamState:
         self.issued[s_idx] = True
 
     def begin_forward(self):
+        self.ensure_slots()
         self.issued = [False] * self.num_stream
+
+    def release_slots(self):
+        """Give the GPU slots back between samplings (WEIGHTFERRY_VAE_FREE_SLOTS, 2026-10-13): every block is
+        transferred into a slot again before it runs, so a slot holds nothing a later forward needs; ensure_slots()
+        allocates them again (same layout) when the next forward begins. Only for plain block streaming (no SSD ring,
+        no scaled fp8 parameter swaps bound to the slots). Returns the bytes released."""
+        if (getattr(self, "slots_released", False) or not self.slot_flats or self.quant_bind is not None
+                or self.ring is not None or self.uploader is not None or getattr(self, "slot_specs", None) is None):
+            return 0
+        torch.cuda.synchronize(self.device)  # no copy / kernel may still use a slot
+        self.restore_rest_binding()
+        n = sum(int(f.numel()) for f in self.slot_flats)
+        self._slot_flat_bytes = int(self.slot_flats[0].numel())
+        self.slot_flats, self.slot_views = [], []
+        self.slots_released = True
+        return n
+
+    def ensure_slots(self):
+        if not getattr(self, "slots_released", False):
+            return
+        self.slot_flats = [torch.empty(self._slot_flat_bytes, dtype=torch.uint8, device=self.device)
+                           for _ in range(self.num_slots)]
+        self.slot_views = [_views(f, self.slot_specs, self.slot_offsets) for f in self.slot_flats]
+        self.slot_ptrs = {v.data_ptr() for views in self.slot_views for v in views}
+        compute = torch.cuda.current_stream(self.device)
+        for ev in self.computed_events:  # the first prefetch into a new slot waits for the work queued so far
+            ev.record(compute)
+        self.slots_released = False
 
     def prefetch_first_slots(self):
         """Called when block 0 actually runs, so cached steps (e.g. TaylorSeer skips) cost no DMA."""
