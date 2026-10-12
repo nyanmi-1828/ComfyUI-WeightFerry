@@ -280,6 +280,8 @@ def _process_batch_tiles(p,
 
     # Encode tiles -> latent
     batched_tensors = torch.cat([usdu_utils.pil_to_tensor(tile) for tile, _ in batch_tiles], dim=0)
+    from ..core import vram_budget
+    vram_budget.free_dit_slots("USDU encode", point="encode")
     (latent,) = vae_encoder.encode(p.vae, batched_tensors)
 
     # Condition from first tile (assume same)

@@ -316,6 +316,8 @@ def process_images(p: StableDiffusionProcessing) -> Processed:
 
     # Encode the image
     batched_tiles = torch.cat([pil_to_tensor(tile) for tile in tiles], dim=0)
+    from ...core import vram_budget
+    vram_budget.free_dit_slots("USDU encode", point="encode")
     (latent,) = p.vae_encoder.encode(p.vae, batched_tiles)
 
     with crop_model_cond(p.model, crop_region, p.init_size, init_image.size, tile_size) as model:

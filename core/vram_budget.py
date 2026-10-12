@@ -91,14 +91,23 @@ def _warn_peak(device, budget):
                  "(the budget steers the automatic choices; allocations beyond it are not refused).")
 
 
-def free_dit_slots(stage=""):
+def free_dit_slots(stage="", point="stage"):
     """WEIGHTFERRY_VAE_FREE_SLOTS (2026-10-13, Codex round 6 B2; off by default: the reserved peak did not drop): before a VAE / upscale stage, give back
     the GPU transfer slots of every streamed DiT ComfyUI still has loaded (3 x 132 MiB for Anima at prefetch 3; they
     were measured still held at the first USDU encode). They are allocated again when that DiT's next forward begins;
     every block is transferred into its slot before it runs anyway, so the output is the same. "1": always;
-    "budget": only while the VRAM budget binds."""
+    "budget": only while the VRAM budget binds; "encode" (Codex round 7, C): only right before Ultimate SD
+    Upscale+'s tile encodes (point="encode"), so the upscale's allocations happen as without it."""
     mode = _env.get("WEIGHTFERRY_VAE_FREE_SLOTS")
-    if mode not in ("1", "budget") or (mode == "budget" and _extra[0] <= 0):
+    if mode == "trim":  # experiment (Codex round 7's control): only PyTorch's cache given back before the encodes
+        if point == "encode":
+            import torch
+            torch.cuda.empty_cache()
+        return 0
+    if mode == "encode":
+        if point != "encode":
+            return 0
+    elif mode not in ("1", "budget") or (mode == "budget" and _extra[0] <= 0) or point == "encode":
         return 0
     import comfy.model_management as mm
     from ..streaming.common import _STATE_ATTR

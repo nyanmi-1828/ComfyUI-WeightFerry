@@ -309,6 +309,16 @@ class WeightFerryUpscaleWithModelHalf:
         in_img = image.movedim(-1, -3).to(device)
         output_device = model_management.intermediate_device()
         tile, overlap = 512, 32
+        from ..core import env as _env
+        # WEIGHTFERRY_UPSCALE_HALF_OUT (2026-10-13, off by default): each tile goes to the CPU in the model's dtype and
+        # tiled_scale's float32 accumulation (ps * mask into a float32 output) widens it there -- the same values
+        # (float16 / bfloat16 -> float32 is exact) with half the bytes copied from the GPU
+        half_out = (_env.get("WEIGHTFERRY_UPSCALE_HALF_OUT") == "1" and dt != torch.float32
+                    and torch.device(output_device).type == "cpu")
+
+        def run_tile(a):
+            y = upscale_model(a.to(dt))
+            return y if half_out else y.float()
         try:
             if dt != torch.float32:
                 model.to(dtype=dt)
@@ -318,7 +328,7 @@ class WeightFerryUpscaleWithModelHalf:
                                                                                 tile_x=tile, tile_y=tile, overlap=overlap)
                     pbar = comfy.utils.ProgressBar(steps)
                     with _rrdb_append():
-                        s = comfy.utils.tiled_scale(in_img, lambda a: upscale_model(a.to(dt)).float(), tile_x=tile,
+                        s = comfy.utils.tiled_scale(in_img, run_tile, tile_x=tile,
                                                     tile_y=tile, overlap=overlap, upscale_amount=upscale_model.scale,
                                                     pbar=pbar, output_device=output_device)
                     break
