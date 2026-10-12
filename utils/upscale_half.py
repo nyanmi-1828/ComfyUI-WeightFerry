@@ -106,10 +106,14 @@ def _epilogue_kernel():
 def _conv_act_into(block, inp, dst):
     """dst <- block(inp) for spandrel's conv_block Sequential(Conv2d, LeakyReLU): the same F.conv2d without its bias,
     then the epilogue kernel; anything else (other layers, hooks, padding modes, dtypes, autocast, gradients, CPU)
-    takes block(inp) and a copy."""
+    takes block(inp) and a copy; so do non-NVIDIA builds, cuDNN off, and every call after the kernel failed once."""
     k = _epilogue_kernel()
     nn = torch.nn
-    ok = (k is not None and type(block) is nn.Sequential and len(block) == 2 and inp.is_cuda and inp.is_contiguous()
+    # the cuDNN path adds the bias separately after the convolution (Convolution.cpp); other backends (ROCm, cuDNN off)
+    # may add it inside the convolution before rounding, which this kernel would not match
+    ok = (k is not None and torch.version.hip is None and torch.backends.cudnn.enabled
+          and torch.backends.cudnn.is_available() and type(block) is nn.Sequential and len(block) == 2
+          and inp.is_cuda and inp.is_contiguous()
           and type(block[0]) is nn.Conv2d and type(block[1]) is nn.LeakyReLU and block[0].bias is not None
           and block[0].padding_mode == "zeros" and isinstance(block[0].padding, tuple)
           and inp.dtype in (torch.float16, torch.float32, torch.bfloat16)
@@ -125,7 +129,14 @@ def _conv_act_into(block, inp, dst):
     if y.shape != dst.shape or not y.is_contiguous():
         dst.copy_(block[1](y + c.bias.view(1, -1, 1, 1)))  # not expected; the reference steps
         return
-    k(y, c.bias, dst, block[1].negative_slope)
+    try:
+        k(y, c.bias, dst, block[1].negative_slope)
+    except Exception as exc:  # noqa: BLE001 -- Triton could not compile / launch it: the reference steps from now on
+        _epi["k"] = None
+        from .logging import log_warn
+        log_warn(f"Upscale: the RRDB epilogue kernel failed ({exc!r}); "
+                 "WEIGHTFERRY_UPSCALE_RRDB_EPILOGUE has no effect.")
+        dst.copy_(block[1](y.add_(c.bias.view(1, -1, 1, 1))))
 
 
 _warned = []
