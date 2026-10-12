@@ -147,15 +147,19 @@ def apply(device, stage=""):
         free, _total = torch.cuda.mem_get_info(device)
         # free = total - others - ours: keeping R = free + ours - budget free leaves ours <= budget
         new = max(_orig["reserve"], int(free + process_used(device) - budget))
+    # Dynamic VRAM's headroom is set on its own (Codex CPU check 2026-10-13): back to its own value whenever the budget
+    # does not bind (none, or more than the device gives -- a 2 -> 100 -> 0 GB sequence left it raised), and set again
+    # whenever it differs from the wanted value (a failed set is retried by the next stage, even at the same budget)
+    if _orig.get("aimdo") is not None:
+        desired = _orig["aimdo"] if budget is None or new == _orig["reserve"] else max(_orig["aimdo"], new)
+        try:
+            import comfy_aimdo.control
+            if comfy_aimdo.control.get_simple_vram_headroom() != desired:
+                comfy_aimdo.control.set_simple_vram_headroom(desired)
+        except Exception:  # noqa: BLE001 -- the reserve still holds for ComfyUI's own loads
+            pass
     if new != int(mm.EXTRA_RESERVED_VRAM):
         mm.EXTRA_RESERVED_VRAM = new
-        if _orig.get("aimdo") is not None:
-            try:
-                import comfy_aimdo.control
-                comfy_aimdo.control.set_simple_vram_headroom(_orig["aimdo"] if budget is None
-                                                             else max(_orig["aimdo"], new))
-            except Exception:  # noqa: BLE001 -- the reserve still holds for ComfyUI's own loads
-                pass
         from ..utils.logging import log_info
         if budget is None:
             log_info(f"VRAM budget: none; ComfyUI's reserve back to {_orig['reserve'] / 1024 ** 2:.0f} MB.")
