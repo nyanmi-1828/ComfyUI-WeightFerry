@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # From ssitu/ComfyUI_UltimateSDUpscale 1.7.2 modules/processing.py (GPL-3.0); modified 2026-10-10 for ComfyUI-WeightFerry: relative imports, no config.json; tile skipping and high-pass noise (Ultimate SD Upscale+)
-# 2026-10-12: the tile mask blur and composite on the crop region only (WEIGHTFERRY_USDU_LOCAL_COMPOSITE, the same bytes)
+# 2026-10-12: the tile mask blur and composite on the crop region only (WEIGHTFERRY_USDU_LOCAL_COMPOSITE, the same bytes); the tile-skip check before the mask blur and the tile preparation
 
 from PIL import Image, ImageFilter
 import logging
@@ -285,6 +285,14 @@ def process_images(p: StableDiffusionProcessing) -> Processed:
         crop_region, tile_size = expand_crop(crop_region, image_mask.width,
                                              image_mask.height, target_width, target_height)
 
+    # Tile skipping: a flat tile keeps its upscaled pixels (no encode, sampling or decode). WeightFerry 2026-10-12:
+    # checked before the mask blur and the crops below, which it does not use (a skipped tile no longer blurs)
+    if tiles_are_flat(shared.batch, crop_region, p.tile_skip_threshold):
+        p.skipped_tiles_count += 1
+        if p.progress_bar_enabled and p.pbar is not None:
+            p.pbar.update(1)
+        return Processed(p, [shared.batch[0]], p.seed, "")
+
     # Blur the mask (WeightFerry: on the crop region only with WEIGHTFERRY_USDU_LOCAL_COMPOSITE, the same values)
     if image_utils.LOCAL_COMPOSITE:
         image_mask = image_utils.local_blurred_mask(image_mask, crop_region, p.mask_blur)
@@ -296,13 +304,6 @@ def process_images(p: StableDiffusionProcessing) -> Processed:
 
     # Assume the same size for all images in the batch
     initial_tile_size = tiles[0].size
-
-    # Tile skipping: a flat tile keeps its upscaled pixels (no encode, sampling or decode)
-    if tiles_are_flat(shared.batch, crop_region, p.tile_skip_threshold):
-        p.skipped_tiles_count += 1
-        if p.progress_bar_enabled and p.pbar is not None:
-            p.pbar.update(1)
-        return Processed(p, [shared.batch[0]], p.seed, "")
 
     # Resize if necessary
     for i, tile in enumerate(tiles):

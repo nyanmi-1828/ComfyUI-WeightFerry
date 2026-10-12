@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-only
 # From ssitu/ComfyUI_UltimateSDUpscale 1.7.2 usdu_patch.py (GPL-3.0); modified 2026-10-10 for ComfyUI-WeightFerry: relative imports, no extra log handler; the batched redraw also skips flat tiles and uses the high-pass noise (Ultimate SD Upscale+)
-# 2026-10-12: the tile mask blur and composite on the crop region only (WEIGHTFERRY_USDU_LOCAL_COMPOSITE, the same bytes)
+# 2026-10-12: the tile mask blur and composite on the crop region only (WEIGHTFERRY_USDU_LOCAL_COMPOSITE, the same bytes); the tile-skip check before the mask blur and the tile preparation
 
 """
 Refactored USD Upscaler batch processing patch.
@@ -181,11 +181,10 @@ usdu.Script.run = patched_script_run
 # -------------------------
 # Batch processing helpers shared between linear and chess modes
 # -------------------------
-def _prepare_tile_for_batch(calc_rectangle_fn, current_image: Image.Image, tx: int, ty: int, p) -> Tuple[Image.Image, Tuple[int, int, int, int], Image.Image, Tuple[int, int]]:
-    """
-    Prepare cropped/resized tile, mask, crop-region and tile-size for encoding.
-    Returns: (cropped_tile, initial_tile_size, tile_mask, tile_size)
-    """
+def _tile_geometry(calc_rectangle_fn, current_image: Image.Image, tx: int, ty: int, p):
+    """(tile_mask, crop_region, tile_size) of a tile, before any blur: the first part of _prepare_tile_for_batch, all
+    that the tile-skip check needs (WeightFerry 2026-10-12: the check no longer blurs, crops and resizes every
+    tile)."""
     tile_mask = Image.new("L", (current_image.width, current_image.height), "black")
     tile_draw = ImageDraw.Draw(tile_mask)
     tile_draw.rectangle(calc_rectangle_fn(tx, ty), fill="white")
@@ -213,6 +212,15 @@ def _prepare_tile_for_batch(calc_rectangle_fn, current_image: Image.Image, tx: i
         target_w = math.ceil(crop_w / 8) * 8
         target_h = math.ceil(crop_h / 8) * 8
         crop_region, tile_size = usdu_utils.expand_crop(crop_region, tile_mask.width, tile_mask.height, target_w, target_h)
+    return tile_mask, crop_region, tile_size
+
+
+def _prepare_tile_for_batch(calc_rectangle_fn, current_image: Image.Image, tx: int, ty: int, p) -> Tuple[Image.Image, Tuple[int, int, int, int], Image.Image, Tuple[int, int]]:
+    """
+    Prepare cropped/resized tile, mask, crop-region and tile-size for encoding.
+    Returns: (cropped_tile, initial_tile_size, tile_mask, tile_size)
+    """
+    tile_mask, crop_region, tile_size = _tile_geometry(calc_rectangle_fn, current_image, tx, ty, p)
 
     if usdu_utils.LOCAL_COMPOSITE:  # the blurred mask of the crop region only (image_utils.local_blurred_mask)
         tile_mask = usdu_utils.local_blurred_mask(tile_mask, crop_region, getattr(p, "mask_blur", 0))
@@ -246,7 +254,7 @@ def _process_batch_tiles(p,
     if p.tile_skip_threshold > 0.0:
         keep = []
         for tx, ty in tiles_coords:
-            crop_region = _prepare_tile_for_batch(calc_rectangle_fn, images[0], tx, ty, p)[3]
+            crop_region = _tile_geometry(calc_rectangle_fn, images[0], tx, ty, p)[1]
             if processing.tiles_are_flat(images, crop_region, p.tile_skip_threshold):
                 p.skipped_tiles_count += 1
                 if p.progress_bar_enabled:
