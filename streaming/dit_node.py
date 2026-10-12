@@ -250,7 +250,7 @@ class WeightFerryDiT:
         if stream_block0:
             log_info("DiT Layer Streaming [chunks]: block 0 streams too (chunk streaming hooks every layer).")
         num_stream = num_blocks - resident_k
-        # WEIGHTFERRY_RESIDENT_SPREAD (2026-10-13, web research 2.1; off by default): block 0 resident (as always) and
+        # WEIGHTFERRY_RESIDENT_SPREAD (2026-10-13, web research 2.1; on by default: Cosmos 14B at 8 GB x1.11): block 0 resident (as always) and
         # the other resident blocks spread evenly between the streamed ones instead of 1 .. k-1, so the transfer of a
         # streamed block can overlap a resident block's compute (vLLM / sglang PrefetchOffloader, musubi-tuner); the
         # same blocks run in the same order
