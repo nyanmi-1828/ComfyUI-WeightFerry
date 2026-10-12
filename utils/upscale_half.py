@@ -48,6 +48,9 @@ def _rrdb_append_forward(orig):
     return forward
 
 
+_warned = []
+
+
 @contextlib.contextmanager
 def _rrdb_append():
     """While this node runs its model: spandrel's dense block with the append buffer (WEIGHTFERRY_UPSCALE_RRDB_APPEND),
@@ -57,8 +60,13 @@ def _rrdb_append():
     if _env.get("WEIGHTFERRY_UPSCALE_RRDB_APPEND") == "1":
         try:
             from spandrel.architectures.__arch_helpers.block import ResidualDenseBlock_5C as cls
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 -- spandrel moved / renamed it: spandrel's own code runs
             cls = None
+            if not _warned:
+                _warned.append(True)
+                from .logging import log_warn
+                log_warn(f"Upscale: spandrel's ResidualDenseBlock_5C not found ({exc!r}); "
+                         "WEIGHTFERRY_UPSCALE_RRDB_APPEND has no effect.")
     if cls is None or getattr(cls.forward, "_weightferry", False):
         yield
         return
