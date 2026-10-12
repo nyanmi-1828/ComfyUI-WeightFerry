@@ -54,29 +54,36 @@ def _effective_weight(module, param_key, tensor, device, compute_dtype, out_dtyp
     return value.to(dtype=out_dtype or tensor.dtype)
 
 
+def _persist_put(h, tag, data):
+    """One framed item: a type tag and the length before the bytes, so different structures never feed the same
+    byte string (key v2; v1 concatenated, e.g. [1, 23] and [12, 3] both gave "(123)" -- Codex CPU check 2026-10-13)."""
+    h.update(tag + len(data).to_bytes(8, "little") + data)
+
+
 def _persist_hash_tree(h, obj):
-    """Feed a LoRA patch structure (tensors, adapters, tuples, numbers) into hash object h."""
+    """Feed a LoRA patch structure (tensors, adapters, tuples, numbers) into hash object h. Another type raises
+    TypeError: the entry is then not persisted (the caller logs it) rather than keyed by a guess."""
     from comfy import weight_adapter
     if isinstance(obj, torch.Tensor):
         t = obj.detach().contiguous().cpu()
-        h.update(f"T{tuple(t.shape)}{t.dtype}".encode())
-        h.update(t.reshape(-1).view(torch.uint8).numpy().tobytes())
+        _persist_put(h, b"T", f"{tuple(t.shape)}{t.dtype}".encode())
+        _persist_put(h, b"D", t.reshape(-1).view(torch.uint8).numpy().tobytes())
     elif isinstance(obj, weight_adapter.WeightAdapterBase):
-        h.update(type(obj).__name__.encode())
+        _persist_put(h, b"A", type(obj).__name__.encode())
         _persist_hash_tree(h, obj.weights)
     elif isinstance(obj, (tuple, list)):
-        h.update(b"(")
+        _persist_put(h, b"S", str(len(obj)).encode())
         for o in obj:
             _persist_hash_tree(h, o)
-        h.update(b")")
     elif isinstance(obj, dict):
+        _persist_put(h, b"M", str(len(obj)).encode())
         for k in sorted(obj, key=str):
-            h.update(str(k).encode())
+            _persist_put(h, b"K", repr(k).encode())
             _persist_hash_tree(h, obj[k])
     elif obj is None or isinstance(obj, (int, float, str, bool)):
-        h.update(repr(obj).encode())
+        _persist_put(h, b"V", f"{type(obj).__name__}:{obj!r}".encode())
     else:
-        h.update(getattr(obj, "__qualname__", type(obj).__name__).encode())
+        raise TypeError(f"no stable cache key for a LoRA patch part of type {type(obj).__qualname__}")
 
 
 def _persist_key(patcher, dit, streaming_blocks, block_indices, host_specs, host_offsets, host_bytes, disk_pos,
@@ -97,7 +104,7 @@ def _persist_key(patcher, dit, streaming_blocks, block_indices, host_specs, host
         comfy_ver = comfyui_version.__version__
     except (ImportError, AttributeError):  # older ComfyUI
         comfy_ver = "?"
-    h.update(repr(("v1", os.path.abspath(path), st.st_size, st.st_mtime_ns, comfy_ver, torch.__version__,
+    h.update(repr(("v2", os.path.abspath(path), st.st_size, st.st_mtime_ns, comfy_ver, torch.__version__,
                    str(compute_dtype), list(block_indices), [(tuple(sh), str(dt)) for sh, dt in host_specs],
                    list(host_offsets), host_bytes, list(disk_pos))).encode())
     attr = _block_list_attr(dit) or "blocks"
@@ -107,7 +114,7 @@ def _persist_key(patcher, dit, streaming_blocks, block_indices, host_specs, host
         for n in names:
             key = f"{_key_prefix(dit)}{attr}.{i}.{n}"
             if key in patches:
-                h.update(key.encode())
+                _persist_put(h, b"P", key.encode())
                 _persist_hash_tree(h, patches[key])
     return h.hexdigest()
 
