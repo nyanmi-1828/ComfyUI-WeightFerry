@@ -491,7 +491,7 @@ def _run_sub(block, transformer_options, compute_dtype, module, ln, scale, shift
                and x_res is not None and x_res.dtype == compute_dtype and not transformer_options.get("patches"))
 
     def run(inp):
-        r = {"x": x_res, "gate": gate, "done": False} if use_res else None
+        r = {"x": x_res, "gate": gate, "done": False, "same": getattr(_tls, "same_gate", False)} if use_res else None
         _tls.res = r
         try:
             with _Overrides(list(overrides) + ([(out_layer, _residual_forward)] if use_res else [])):
@@ -607,6 +607,28 @@ def rows_sub(block, transformer_options, compute_dtype, residual_dtype, module, 
     return _add_residual(x_res, gate, out, done, residual_dtype)
 
 
+_RESID_MERGE = None  # None: WEIGHTFERRY_CFG_RESID_MERGE (read per block); True / False: forced (A/B measurements)
+
+
+def _rows_same(emb, lora):
+    """WEIGHTFERRY_CFG_RESID_MERGE: whether every (batch, frame) row of the block's modulation input -- the timestep
+    embedding and the AdaLN-LoRA term -- is the same, so every row of every gate is (CFG's cond and uncond share the
+    timestep: ComfyUI concatenates one timestep for the batch). Read once per forward (one sync): cached on the
+    embedding tensor, which ComfyUI's DiT passes to all its blocks."""
+    c = getattr(emb, "_weightferry_rows_same", None)
+    if c is not None and c[0] is lora:
+        return c[1]
+
+    def eq(t):
+        return t is None or (t.dim() == 3 and bool(torch.equal(t, t[:1, :1].expand_as(t))))
+    same = emb.dim() == 3 and emb.shape[0] * emb.shape[1] > 1 and eq(emb) and eq(lora)
+    try:
+        emb._weightferry_rows_same = (lora, same)
+    except Exception:  # noqa: BLE001 -- not cacheable: checked again next block
+        pass
+    return same
+
+
 def _block_forward(self, x_B_T_H_W_D, emb_B_T_D, crossattn_emb, rope_emb_L_1_1_D=None, adaln_lora_B_T_3D=None,
                    extra_per_block_pos_emb=None, transformer_options={}):
     """ComfyUI's Block.forward (comfy/ldm/cosmos/predict2.py) with ``modulate`` for the three scale-and-shift steps
@@ -615,9 +637,21 @@ def _block_forward(self, x_B_T_H_W_D, emb_B_T_D, crossattn_emb, rope_emb_L_1_1_D
     if "mod" not in _state["parts"]:
         return _state["orig"]["forward"](self, x_B_T_H_W_D, emb_B_T_D, crossattn_emb, rope_emb_L_1_1_D,
                                          adaln_lora_B_T_3D, extra_per_block_pos_emb, transformer_options)
-    from einops import rearrange
     residual_dtype = x_B_T_H_W_D.dtype
     compute_dtype = emb_B_T_D.dtype
+    merge = _RESID_MERGE if _RESID_MERGE is not None else _env.get("WEIGHTFERRY_CFG_RESID_MERGE") == "1"
+    _tls.same_gate = (merge and "res" in _state["parts"]
+                      and _rows_same(emb_B_T_D, adaln_lora_B_T_3D))
+    try:
+        return _block_body(self, x_B_T_H_W_D, emb_B_T_D, crossattn_emb, rope_emb_L_1_1_D, adaln_lora_B_T_3D,
+                           extra_per_block_pos_emb, transformer_options, residual_dtype, compute_dtype)
+    finally:
+        _tls.same_gate = False  # only this block's sub-layers (the row path has its own forward)
+
+
+def _block_body(self, x_B_T_H_W_D, emb_B_T_D, crossattn_emb, rope_emb_L_1_1_D, adaln_lora_B_T_3D,
+                extra_per_block_pos_emb, transformer_options, residual_dtype, compute_dtype):
+    from einops import rearrange
     if extra_per_block_pos_emb is not None:
         x_B_T_H_W_D = x_B_T_H_W_D + extra_per_block_pos_emb
     if self.use_adaln_lora:

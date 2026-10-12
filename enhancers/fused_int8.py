@@ -235,6 +235,19 @@ def _int8_linear_residual(x, weight, bias, res):
     if n != D or m != groups * rows or xr.dtype != q["dtype"] or gate.dtype != q["dtype"]:
         return None
     g2 = gate.reshape(groups, D)
+    if res.get("same") and groups > 1 and xr3.is_contiguous() and out3.is_contiguous():
+        # WEIGHTFERRY_CFG_RESID_MERGE: every group has the same gate (_rows_same): one GEMM over all the rows with
+        # group 0's gate, the same bits as one GEMM per group (2026-10-11: identical, 4.21)
+        resid, o = xr3.reshape(groups * rows, D), out3.reshape(groups * rows, D)
+        if not (kc._aligned16(resid) and kc._aligned16(o)):
+            return None
+        used = kc._C.cutlass_int8_dequant_residual(
+            kc._wrap_for_dlpack(q["x_q"]), kc._wrap_for_dlpack(q["w_q"]), kc._wrap_for_dlpack(q["x_s"]),
+            kc._wrap_for_dlpack(q["ws"]), kc._wrap_for_dlpack(kc._empty_cuda_tensor(dev, q["dtype"])),
+            kc._wrap_for_dlpack(kc._gemm_vector_arg(g2[0].contiguous(), dev, q["dtype"])),
+            kc._wrap_for_dlpack(resid), kc._wrap_for_dlpack(o), kc.DTYPE_TO_CODE[q["dtype"]], stream_ptr)
+        _count("resmerge", bool(used), None if used else "kitchen declined")
+        return out.view(*q["shape"][:-1], n) if used else None
     for gi in range(groups):
         sl = slice(gi * rows, (gi + 1) * rows)
         resid, o = xr3[gi], out3[gi]
