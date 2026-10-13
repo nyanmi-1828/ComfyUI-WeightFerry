@@ -238,7 +238,7 @@ _warned = []
 
 
 def _strip_forward(orig, rows):
-    """WEIGHTFERRY_UPSCALE_STRIPS (2026-10-13; off by default): spandrel's RRDBNet.forward with the model's last stage
+    """WEIGHTFERRY_UPSCALE_STRIPS (2026-10-13; 256 rows by default): spandrel's RRDBNet.forward with the model's last stage
     -- from its last nn.Upsample (nearest x2) to the end, the 3x3 convolutions and LeakyReLUs at the output resolution
     (spandrel flattens them into the model's top-level Sequential) -- computed in strips of ``rows`` output rows, each
     with a halo of one row per convolution, so every output pixel sees the same inputs (at the image's top / bottom the
