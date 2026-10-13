@@ -106,7 +106,7 @@ UNET の読み込み → LoRA → ⚡ DiT Layer Streaming → CFG Early-Stop →
 生成の段がほかにもある（顔の仕上げ、拡大など）ときは、同じストリーミングのノードの出力から、段ごとに CFG Early-Stop と TaylorSeer を 1 組ずつ置きます。
 
 * **モデルの精度**: 公式の bf16 のファイルはそのまま使えます。int8 ConvRot 版（[変換ツール](#変換ツールtools)で作る）が RTX 4060 では最も速く、fp8 より bf16 に近い画質です（同じシードで仕上げた画像の bf16 との LPIPS が、fp8 の 0.42 に対して 0.31）。ブロックの融合は int8 ConvRot と scaled fp8 に効きます。Cosmos-Predict2 14B でも同じで、int8 ConvRot（14.3GB、scaled fp8 と同じ大きさ）は bf16 との LPIPS が 0.030（scaled fp8 は 0.33 で、絵が目に見えて変わる）、速さは 5.30 s/it（scaled fp8 は 6.89。896x1472、30 ステップ、CFG 4、RTX 4060）です。
-* **⚡ DiT Layer Streaming**: `auto_config` をオン（既定）にすると、空きの VRAM / RAM から `resident_blocks` と `tiering` を決めます。ほかの設定はどちらのときも効きます。
+* **⚡ DiT Layer Streaming**: `auto_config` をオン（既定）にすると、空きの VRAM / RAM から `resident_blocks` と `tiering` を決めます。ほかの設定はどちらのときも効きます。`vram_budget_gb`（0 = なし。既定で、いちばん速い）は ComfyUI が使ってよい VRAM の上限で、ゲームなどほかの GPU のアプリと並べて動かすときに使います。自動の設定はその中で決まり、画像は変わらず速さだけが変わります（ゆるい上限です。VAE や拡大のピークは超えることがあり、そのときは一度だけ警告します）。
 
 ### CFG Early-Stop（WeightFerry/speed）
 
@@ -145,6 +145,7 @@ KSampler で `real` / `tors` を、ほかのサンプラー / スケジューラ
   * VRAM が少ないときはこちらが速い拡大です: 上限 4GB / 2GB で 1 枚 52 / 65 秒（タイルなしは 61 / 74 秒、RTX 4060）。
 * **タイルなし**（画像全体を 1 回で描き直す）: **Upscale Image (using Model)** → 縮小 → VAE Encode → KSampler。モデルは **RoPE Scale**（`mode` を `ntk` に。既定は `off`。2 倍なら `factor` 2.0）を通して、大きくしても学習時の位置の範囲に収めます。
 * **Upscale Image (using Model)** 単体: `float32` は ComfyUI のノードと同じ。`float16` は約 2.2〜2.6 倍速く、見た目は同じです。
+* ESRGAN 系のモデル（4x-UltraSharp など）では、このパッケージの拡大（このノードと Ultimate SD Upscale+ の拡大）は、モデルの密結合ブロックを追記用のバッファとまとめたカーネルで動かし、float16 では最後の段を出力 256 行ずつの帯に分けて計算します。512 のタイル 1 枚の VRAM のピークが下がり（プロセスのメモリで 2304 → 768MB）、出力はビット単位で同じです（[docs/ENVIRONMENT.md](docs/ENVIRONMENT.md) の `WEIGHTFERRY_UPSCALE_*`）。
 
 ### VAE Decode (Exact Tiles, low VRAM)（WeightFerry/vae）
 
@@ -207,6 +208,7 @@ VRAM が足りないとき（大きい画像、小さい GPU）に、Wan 2.1 の
 * ComfyUI の Cosmos-Predict2 / Anima の `Block`・`Attention`・`GPT2FeedForward` のクラスに、要素ごとの演算をまとめた処理を入れる（結果はビット単位で同じ。`WEIGHTFERRY_FUSED_BLOCK=0` で無効）。
 * ComfyUI-GGUF が入っていれば、その展開（`ops.dequantize_tensor`・`GGMLLayer.get_weight`）を、重みごとに 1 本の Triton のカーネルに置き換える（Q4_0 / Q4_1 / Q5_0 / Q5_1 / Q8_0 と K-quant の Q2_K〜Q6_K）。LoRA は comfy 自身の `torch.mm` のあと同じカーネルの中で足し、LoRA の係数は固定 RAM から送る。結果はビット単位で同じ（`WEIGHTFERRY_GGUF_TRITON=0` ですべて無効。細かいスイッチは [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md)）。LoRA の係数を固定 RAM に置いた時点から、外した LoRA の固定 RAM を返すため、ComfyUI の `free_memory`・`unload_all_models`・`soft_empty_cache` を包む。
 * ストリーミングのノードの `sage_attention` / `sage_pv_fp16` は、アテンションを全体で差し替え、元に戻しません。
+* VRAM の上限（`vram_budget_gb` または `WEIGHTFERRY_VRAM_BUDGET_GB`）を付けると、ComfyUI の予約（`--reserve-vram` で決まる量）と Dynamic VRAM の余裕を引き上げます。上限なしの WeightFerry のノードが動くと元に戻ります。
 
 ## 困ったとき
 
@@ -237,7 +239,7 @@ fp8 の変換はブロックごとの重みを連続した範囲に書くので�
 
 ### 環境変数
 
-`WEIGHTFERRY_*` の 65 個（どれも任意。調整・低 VRAM のスイッチ・デバッグ・既定でオンのものを切るスイッチ）。既定値と根拠の計測は [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md)（英語）。`ComfyUI/user/weightferry.env` に 1 行 1 つ `名前=値` で書いても効きます（本物の環境変数が優先。Comfy Desktop で便利）。
+`WEIGHTFERRY_*` の 75 個（どれも任意。調整・低 VRAM のスイッチ・デバッグ・既定でオンのものを切るスイッチ）。既定値と根拠の計測は [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md)（英語）。`ComfyUI/user/weightferry.env` に 1 行 1 つ `名前=値` で書いても効きます（本物の環境変数が優先。Comfy Desktop で便利）。
 
 ## 制限
 

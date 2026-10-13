@@ -140,7 +140,10 @@ streaming node's output.
   the scaled fp8 file) against bf16 LPIPS 0.030 (scaled fp8: 0.33, a visibly different picture) and 5.30 against
   6.89 s/it (896x1472, 30 steps, CFG 4, RTX 4060).
 * **⚡ DiT Layer Streaming**: `auto_config` on (the default) sets `resident_blocks` and `tiering` from the
-  free VRAM / RAM; the other options apply in both modes.
+  free VRAM / RAM; the other options apply in both modes. `vram_budget_gb` (0 = none, the default and the fastest)
+  caps the VRAM ComfyUI may use, for running beside a game or another GPU app: the automatic choices plan inside it,
+  the image stays the same and only the speed changes (a soft limit: a VAE or upscale peak can pass it, with a
+  warning once).
 
 ### CFG Early-Stop (WeightFerry/speed)
 
@@ -196,6 +199,10 @@ KSamplers (base, face detail, Ultimate SD Upscale), so they change together.
   for 2x) so the larger size keeps the trained position range.
 * **Upscale Image (using Model)** on its own: `float32` = ComfyUI's node; `float16` about 2.2–2.6x faster and
   visually identical.
+* With an ESRGAN-type model (e.g. 4x-UltraSharp), this package's upscale (this node and Ultimate SD Upscale+'s
+  upscale step) runs the model's dense blocks with an append buffer and fused kernels, and in float16 its last stage
+  in strips of 256 output rows, which lowers the VRAM peak of a 512 tile (process memory 2304 → 768 MB); the output is
+  the same bit for bit ([docs/ENVIRONMENT.md](docs/ENVIRONMENT.md), `WEIGHTFERRY_UPSCALE_*`).
 
 ### VAE Decode (Exact Tiles, low VRAM) (WeightFerry/vae)
 
@@ -298,6 +305,8 @@ Loading the package has side effects outside its own nodes:
   [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md)). Once a LoRA factor is pinned, ComfyUI's `free_memory` /
   `unload_all_models` / `soft_empty_cache` are wrapped to give that pinned RAM back after a LoRA is removed.
 * The streaming node's `sage_attention` / `sage_pv_fp16` options patch attention globally and are not undone.
+* With a VRAM budget (`vram_budget_gb` or `WEIGHTFERRY_VRAM_BUDGET_GB`), ComfyUI's reserve (what `--reserve-vram`
+  sets) and Dynamic VRAM's headroom are raised; they are restored when a WeightFerry node runs without a budget.
 
 ## Troubleshooting
 
@@ -342,7 +351,7 @@ from the file.
 
 ### Environment variables
 
-65 optional `WEIGHTFERRY_*` variables (tuning, low-VRAM switches, debugging, off-switches for features on by default), each with its default and
+75 optional `WEIGHTFERRY_*` variables (tuning, low-VRAM switches, debugging, off-switches for features on by default), each with its default and
 the measurement behind it: [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md). They can also be written to
 `ComfyUI/user/weightferry.env` (one `NAME=value` per line; a real environment variable wins), handy with Comfy Desktop.
 
