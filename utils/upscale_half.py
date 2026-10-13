@@ -261,6 +261,7 @@ def _strip_forward(orig, rows):
             return orig(self, x)
         ups = [i for i, m in enumerate(seq) if type(m) is nn.Upsample]
         if not ups:
+            _STRIP_STATS["whole"] += 1
             return orig(self, x)
         u = ups[-1]
         up, tail = seq[u], list(seq)[u + 1:]
@@ -270,11 +271,12 @@ def _strip_forward(orig, rows):
                            and m.dilation == (1, 1) and m.groups == 1 and m.padding_mode == "zeros"
                            for m in tail if type(m) is nn.Conv2d)
                 or any(m._forward_hooks or m._forward_pre_hooks for m in [up] + tail)):
+            _STRIP_STATS["whole"] += 1
             return orig(self, x)
         halo = sum(1 for m in tail if type(m) is nn.Conv2d)
-        _STRIP_STATS["strips"] += 1
         f = seq[:u](x)
         H, W = f.shape[2] * 2, f.shape[3] * 2
+        _STRIP_STATS["strips" if H > rows else "whole"] += 1
         if H <= rows:
             y = up(f)
             for m in tail:
