@@ -237,6 +237,85 @@ def _residual_into(out, x):
 _warned = []
 
 
+def _strip_forward(orig, rows):
+    """WEIGHTFERRY_UPSCALE_STRIPS (2026-10-13; off by default): spandrel's RRDBNet.forward with the model's last stage
+    -- from its last nn.Upsample (nearest x2) to the end, the 3x3 convolutions and LeakyReLUs at the output resolution
+    (spandrel flattens them into the model's top-level Sequential) -- computed in strips of ``rows`` output rows, each
+    with a halo of one row per convolution, so every output pixel sees the same inputs (at the image's top / bottom the
+    strip starts at the edge, where the zero padding is the model's own). Those convolutions on 64 x 2048 x 2048 maps
+    are the tile's CUDA peak (Codex B, measured per stage); in strips the process's dedicated memory of one 512 tile
+    in float16 peaked 2304 -> 768 MB. float16 only: the same bits there (cuDNN computes each pixel the same way for
+    the strip's shape), float32 did not give the same bits."""
+    nn = torch.nn
+
+    def forward(self, x):
+        seq = getattr(self, "model", None)
+        if (self.shuffle_factor or type(seq) is not nn.Sequential or x.shape[0] != 1 or x.dtype != torch.float16
+                or not x.is_cuda):
+            return orig(self, x)
+        ups = [i for i, m in enumerate(seq) if type(m) is nn.Upsample]
+        if not ups:
+            return orig(self, x)
+        u = ups[-1]
+        up, tail = seq[u], list(seq)[u + 1:]
+        if (up.mode != "nearest" or up.scale_factor is None or float(up.scale_factor) != 2.0
+                or not tail or not all(type(m) in (nn.Conv2d, nn.LeakyReLU) for m in tail)
+                or not all(m.kernel_size == (3, 3) and m.stride == (1, 1) and m.padding == (1, 1)
+                           and m.dilation == (1, 1) and m.groups == 1 and m.padding_mode == "zeros"
+                           for m in tail if type(m) is nn.Conv2d)
+                or any(m._forward_hooks or m._forward_pre_hooks for m in [up] + tail)):
+            return orig(self, x)
+        halo = sum(1 for m in tail if type(m) is nn.Conv2d)
+        f = seq[:u](x)
+        H, W = f.shape[2] * 2, f.shape[3] * 2
+        if H <= rows:
+            y = up(f)
+            for m in tail:
+                y = m(y)
+            return y
+        out = None
+        for r0 in range(0, H, rows):
+            r1 = min(H, r0 + rows)
+            lo, hi = max(0, r0 - halo), min(H, r1 + halo)
+            a, b = lo // 2, (hi + 1) // 2
+            y = up(f[:, :, a:b])[:, :, lo - 2 * a:hi - 2 * a]
+            for m in tail:
+                y = m(y)
+            y = y[:, :, r0 - lo:r1 - lo]
+            if out is None:
+                out = torch.empty((1, y.shape[1], H, W), dtype=y.dtype, device=y.device)
+            out[:, :, r0:r1] = y
+        return out
+    forward._weightferry = True
+    return forward
+
+
+@contextlib.contextmanager
+def _strips():
+    """While this node runs its model: spandrel's RRDBNet with its last stage in strips (WEIGHTFERRY_UPSCALE_STRIPS =
+    output rows per strip, 0 = off), restored afterwards."""
+    from ..core import env as _env
+    try:
+        rows = int(_env.get("WEIGHTFERRY_UPSCALE_STRIPS") or 0)
+    except ValueError:
+        rows = 0
+    cls = None
+    if rows > 0:
+        try:
+            from spandrel.architectures.ESRGAN.__arch.RRDB import RRDBNet as cls
+        except Exception:  # noqa: BLE001 -- spandrel moved it: the whole tile at once
+            cls = None
+    if cls is None or getattr(cls.forward, "_weightferry", False):
+        yield
+        return
+    orig = cls.forward
+    cls.forward = _strip_forward(orig, rows)
+    try:
+        yield
+    finally:
+        cls.forward = orig
+
+
 @contextlib.contextmanager
 def _rrdb_append():
     """While this node runs its model: spandrel's dense block with the append buffer (WEIGHTFERRY_UPSCALE_RRDB_APPEND),
@@ -327,7 +406,7 @@ class WeightFerryUpscaleWithModelHalf:
                     steps = in_img.shape[0] * comfy.utils.get_tiled_scale_steps(in_img.shape[3], in_img.shape[2],
                                                                                 tile_x=tile, tile_y=tile, overlap=overlap)
                     pbar = comfy.utils.ProgressBar(steps)
-                    with _rrdb_append():
+                    with _rrdb_append(), _strips():
                         s = comfy.utils.tiled_scale(in_img, run_tile, tile_x=tile,
                                                     tile_y=tile, overlap=overlap, upscale_amount=upscale_model.scale,
                                                     pbar=pbar, output_device=output_device)
