@@ -145,7 +145,7 @@ KSampler で `real` / `tors` を、ほかのサンプラー / スケジューラ
   * VRAM が少ないときはこちらが速い拡大です: 上限 4GB / 2GB で 1 枚 52 / 65 秒（タイルなしは 61 / 74 秒、RTX 4060）。
 * **タイルなし**（画像全体を 1 回で描き直す）: **Upscale Image (using Model)** → 縮小 → VAE Encode → KSampler。モデルは **RoPE Scale**（`mode` を `ntk` に。既定は `off`。2 倍なら `factor` 2.0）を通して、大きくしても学習時の位置の範囲に収めます。
 * **Upscale Image (using Model)** 単体: `float32` は ComfyUI のノードと同じ。`float16` は約 2.2〜2.6 倍速く、見た目は同じです。
-* ESRGAN 系のモデル（4x-UltraSharp など）では、このパッケージの拡大（このノードと Ultimate SD Upscale+ の拡大）は、モデルの密結合ブロックを追記用のバッファとまとめたカーネルで動かし、float16 では最後の段を出力 256 行ずつの帯に分けて計算します。512 のタイル 1 枚の VRAM のピークが下がり（プロセスのメモリで 2304 → 768MB）、出力はビット単位で同じです（[docs/ENVIRONMENT.md](docs/ENVIRONMENT.md) の `WEIGHTFERRY_UPSCALE_*`）。
+* ESRGAN 系のモデル（4x-UltraSharp など）では、このパッケージの拡大（このノードと Ultimate SD Upscale+ の拡大）は、モデルの密結合ブロックを追記用のバッファとまとめたカーネルで動かし、float16 では最後の段を出力 256 行ずつの帯に分けて計算します。512 のタイル 1 枚の VRAM のピークが下がり（プロセスのメモリで 2304 → 768MB）、出力はビット単位で同じです。これは NVIDIA と cuDNN（カーネルは Triton も）の場合で、それ以外では従来どおりに動きます（[docs/ENVIRONMENT.md](docs/ENVIRONMENT.md) の `WEIGHTFERRY_UPSCALE_*`）。
 
 ### VAE Decode (Exact Tiles, low VRAM)（WeightFerry/vae）
 

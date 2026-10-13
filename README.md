@@ -202,7 +202,7 @@ KSamplers (base, face detail, Ultimate SD Upscale), so they change together.
 * With an ESRGAN-type model (e.g. 4x-UltraSharp), this package's upscale (this node and Ultimate SD Upscale+'s
   upscale step) runs the model's dense blocks with an append buffer and fused kernels, and in float16 its last stage
   in strips of 256 output rows, which lowers the VRAM peak of a 512 tile (process memory 2304 → 768 MB); the output is
-  the same bit for bit ([docs/ENVIRONMENT.md](docs/ENVIRONMENT.md), `WEIGHTFERRY_UPSCALE_*`).
+  the same bit for bit. These need NVIDIA with cuDNN (Triton for the kernels); elsewhere the model runs as before ([docs/ENVIRONMENT.md](docs/ENVIRONMENT.md), `WEIGHTFERRY_UPSCALE_*`).
 
 ### VAE Decode (Exact Tiles, low VRAM) (WeightFerry/vae)
 
