@@ -237,6 +237,9 @@ def _residual_into(out, x):
 _warned = []
 
 
+_STRIP_STATS = {"strips": 0, "whole": 0}  # tiles computed in strips / as a whole (tests read it)
+
+
 def _strip_forward(orig, rows):
     """WEIGHTFERRY_UPSCALE_STRIPS (2026-10-13; 256 rows by default): spandrel's RRDBNet.forward with the model's last stage
     -- from its last nn.Upsample (nearest x2) to the end, the 3x3 convolutions and LeakyReLUs at the output resolution
@@ -250,8 +253,11 @@ def _strip_forward(orig, rows):
 
     def forward(self, x):
         seq = getattr(self, "model", None)
+        # cuDNN on and its heuristics (not autotuning, which may pick another algorithm per strip shape), NVIDIA
+        # (review 47); the measured float16 case only
         if (self.shuffle_factor or type(seq) is not nn.Sequential or x.shape[0] != 1 or x.dtype != torch.float16
-                or not x.is_cuda):
+                or not x.is_cuda or not _backend_ok() or torch.backends.cudnn.benchmark):
+            _STRIP_STATS["whole"] += 1
             return orig(self, x)
         ups = [i for i, m in enumerate(seq) if type(m) is nn.Upsample]
         if not ups:
@@ -266,6 +272,7 @@ def _strip_forward(orig, rows):
                 or any(m._forward_hooks or m._forward_pre_hooks for m in [up] + tail)):
             return orig(self, x)
         halo = sum(1 for m in tail if type(m) is nn.Conv2d)
+        _STRIP_STATS["strips"] += 1
         f = seq[:u](x)
         H, W = f.shape[2] * 2, f.shape[3] * 2
         if H <= rows:
